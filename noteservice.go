@@ -452,3 +452,111 @@ func (s *NoteService) currentCommit() string {
 	}
 	return strings.TrimSpace(string(out))
 }
+
+// ───────────────────────────── cmdline file finder ─────────────────────────────
+
+// DirEntry is one item in the cmdline file finder.
+type DirEntry struct {
+	Name  string `json:"name"`
+	IsDir bool   `json:"isDir"`
+}
+
+// ListDir powers the per-directory file finder (option A: instant, no index).
+// `input` is the path the user is typing in the cmdline. We resolve the path
+// notation for its DIRECTORY part and list that one directory, filtering by the
+// trailing partial segment. Notation:
+//
+//	~ , ~/x   → user home
+//	./x , /x  → project root (a lone `/` means root, NOT the filesystem root)
+//	x         → project root + /x
+//
+// Returns at most 60 entries, directories first then prefix-matches. Never errors
+// on a missing/unreadable directory (returns empty) so the live finder degrades
+// quietly while you type a path that doesn't exist yet.
+func (s *NoteService) ListDir(input string) ([]DirEntry, error) {
+	dirInput, partial := splitDirPartial(input)
+	base, err := s.resolveBase(dirInput)
+	if err != nil {
+		return []DirEntry{}, nil
+	}
+	des, err := os.ReadDir(base)
+	if err != nil {
+		return []DirEntry{}, nil
+	}
+
+	needle := strings.ToLower(partial)
+	type scored struct {
+		e    DirEntry
+		pref bool // name starts with the needle (ranked above plain substring hits)
+	}
+	hits := make([]scored, 0, len(des))
+	for _, de := range des {
+		name := de.Name()
+		low := strings.ToLower(name)
+		if needle != "" && !strings.Contains(low, needle) {
+			continue
+		}
+		hits = append(hits, scored{
+			e:    DirEntry{Name: name, IsDir: de.IsDir()},
+			pref: needle != "" && strings.HasPrefix(low, needle),
+		})
+	}
+	sort.Slice(hits, func(i, j int) bool {
+		a, b := hits[i], hits[j]
+		if a.e.IsDir != b.e.IsDir {
+			return a.e.IsDir // directories first
+		}
+		if a.pref != b.pref {
+			return a.pref // prefix matches before substring matches
+		}
+		return strings.ToLower(a.e.Name) < strings.ToLower(b.e.Name)
+	})
+	if len(hits) > 60 {
+		hits = hits[:60]
+	}
+	out := make([]DirEntry, len(hits))
+	for i, h := range hits {
+		out[i] = h.e
+	}
+	return out, nil
+}
+
+// splitDirPartial cuts `input` at its last slash into the directory portion and
+// the trailing partial segment being typed. "src/po" → ("src","po"); "po" → ("","po").
+func splitDirPartial(input string) (dir, partial string) {
+	i := strings.LastIndex(input, "/")
+	if i < 0 {
+		return "", input
+	}
+	return input[:i], input[i+1:]
+}
+
+// resolveBase maps the directory notation to a real absolute path. A lone `/` (or
+// "" or ".") resolves to the project root by design — the user almost never wants
+// the filesystem root, so `/` is treated as `./`.
+func (s *NoteService) resolveBase(dirInput string) (string, error) {
+	if s.root == "" {
+		return "", errors.New("no project root")
+	}
+	home, _ := os.UserHomeDir()
+	switch {
+	case dirInput == "" || dirInput == "/" || dirInput == ".":
+		return s.root, nil
+	case dirInput == "~":
+		if home == "" {
+			return "", errors.New("no home dir")
+		}
+		return home, nil
+	case strings.HasPrefix(dirInput, "~/"):
+		if home == "" {
+			return "", errors.New("no home dir")
+		}
+		return filepath.Join(home, dirInput[2:]), nil
+	case strings.HasPrefix(dirInput, "./"):
+		return filepath.Join(s.root, dirInput[2:]), nil
+	case strings.HasPrefix(dirInput, "/"):
+		return filepath.Join(s.root, dirInput[1:]), nil
+	default:
+		return filepath.Join(s.root, dirInput), nil
+	}
+}

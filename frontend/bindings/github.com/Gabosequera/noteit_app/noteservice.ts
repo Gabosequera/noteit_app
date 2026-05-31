@@ -29,6 +29,17 @@ export function AddAnchor(noteID: string, file: string, lines: string): $Cancell
 }
 
 /**
+ * AddCard appends a new status card to the end of a note document and records a
+ * card.created event. The card id is a server-generated UUIDv7; created/updated
+ * are stamped now (UTC). Returns the updated Document.
+ */
+export function AddCard(noteID: string, body: string): $CancellablePromise<$models.Document> {
+    return $Call.ByID(1585089558, noteID, body).then(($result: any) => {
+        return $$createType1($result);
+    });
+}
+
+/**
  * CreateNote writes a new note to disk and returns it. title's first line is the
  * title; the rest of `title` plus `body` is irrelevant here — the frontend sends
  * a clean title + body. The note id is a server-generated UUIDv7; the frontend
@@ -53,6 +64,26 @@ export function CreateNoteFull($in: $models.NewNote): $CancellablePromise<$model
 }
 
 /**
+ * DeleteCard removes a card from the document and records a card.deleted event.
+ * The journal keeps the full history, so a deleted card still exists in the
+ * timeline even though it's gone from the present document.
+ */
+export function DeleteCard(noteID: string, cardID: string): $CancellablePromise<$models.Document> {
+    return $Call.ByID(705493124, noteID, cardID).then(($result: any) => {
+        return $$createType1($result);
+    });
+}
+
+/**
+ * GetDocument loads a note and parses its body into ordered blocks for rendering.
+ */
+export function GetDocument(id: string): $CancellablePromise<$models.Document> {
+    return $Call.ByID(2793803718, id).then(($result: any) => {
+        return $$createType1($result);
+    });
+}
+
+/**
  * GetNote returns a single note by id, including its body.
  */
 export function GetNote(id: string): $CancellablePromise<$models.Note> {
@@ -62,12 +93,44 @@ export function GetNote(id: string): $CancellablePromise<$models.Note> {
 }
 
 /**
+ * LinkCards records that card `fromID` references card `toID`, persisting the
+ * edge on the source card and recording a card.linked event. Both cards must
+ * exist in the same note. Linking is idempotent (a duplicate edge is a no-op on
+ * the document but still skipped, not re-journaled).
+ */
+export function LinkCards(noteID: string, fromID: string, toID: string): $CancellablePromise<$models.Document> {
+    return $Call.ByID(591812820, noteID, fromID, toID).then(($result: any) => {
+        return $$createType1($result);
+    });
+}
+
+/**
+ * ListDir powers the per-directory file finder (option A: instant, no index).
+ * `input` is the path the user is typing in the cmdline. We resolve the path
+ * notation for its DIRECTORY part and list that one directory, filtering by the
+ * trailing partial segment. Notation:
+ * 
+ * 	~ , ~/x   → user home
+ * 	./x , /x  → project root (a lone `/` means root, NOT the filesystem root)
+ * 	x         → project root + /x
+ * 
+ * Returns at most 60 entries, directories first then prefix-matches. Never errors
+ * on a missing/unreadable directory (returns empty) so the live finder degrades
+ * quietly while you type a path that doesn't exist yet.
+ */
+export function ListDir(input: string): $CancellablePromise<$models.DirEntry[]> {
+    return $Call.ByID(4251476956, input).then(($result: any) => {
+        return $$createType3($result);
+    });
+}
+
+/**
  * ListNotes reads and parses every note file, newest-first by Created. Malformed
  * files are skipped with a logged warning rather than failing the whole list.
  */
 export function ListNotes(): $CancellablePromise<$models.Note[]> {
     return $Call.ByID(27288930).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType4($result);
     });
 }
 
@@ -79,6 +142,31 @@ export function ProjectRoot(): $CancellablePromise<string> {
     return $Call.ByID(1402940126);
 }
 
+/**
+ * Timeline returns the full chronological journal for the project. The frontend
+ * groups this into the precise "what happened when" view and, later, the graph.
+ */
+export function Timeline(): $CancellablePromise<$models.JournalEvent[]> {
+    return $Call.ByID(1751149986).then(($result: any) => {
+        return $$createType6($result);
+    });
+}
+
+/**
+ * UpdateCard replaces the body of an existing card and records a card.updated
+ * event. Created stays; Updated is bumped to now.
+ */
+export function UpdateCard(noteID: string, cardID: string, body: string): $CancellablePromise<$models.Document> {
+    return $Call.ByID(1988876318, noteID, cardID, body).then(($result: any) => {
+        return $$createType1($result);
+    });
+}
+
 // Private type creation functions
 const $$createType0 = $models.Note.createFrom;
-const $$createType1 = $Create.Array($$createType0);
+const $$createType1 = $models.Document.createFrom;
+const $$createType2 = $models.DirEntry.createFrom;
+const $$createType3 = $Create.Array($$createType2);
+const $$createType4 = $Create.Array($$createType0);
+const $$createType5 = $models.JournalEvent.createFrom;
+const $$createType6 = $Create.Array($$createType5);

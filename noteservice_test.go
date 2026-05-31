@@ -253,6 +253,78 @@ func TestGetInvalidIDRejected(t *testing.T) {
 	}
 }
 
+func TestListDirNotationAndFilter(t *testing.T) {
+	s := newTestService(t)
+	// project layout: src/pool.go, src/parser.go, cmd/, README.md
+	mustMkdir(t, filepath.Join(s.root, "src"))
+	mustMkdir(t, filepath.Join(s.root, "cmd"))
+	mustWrite(t, filepath.Join(s.root, "src", "pool.go"), "x")
+	mustWrite(t, filepath.Join(s.root, "src", "parser.go"), "x")
+	mustWrite(t, filepath.Join(s.root, "README.md"), "x")
+
+	// "/" means project root (NOT filesystem root). Dirs come first.
+	root, err := s.ListDir("/")
+	if err != nil {
+		t.Fatalf("ListDir: %v", err)
+	}
+	if len(root) < 3 {
+		t.Fatalf("expected at least 3 entries at root, got %d: %+v", len(root), root)
+	}
+	if !root[0].IsDir {
+		t.Errorf("directories should sort first, got %+v", root[0])
+	}
+
+	// "./src/" lists inside src; "/src/" must be identical (/ == ./).
+	a, _ := s.ListDir("./src/")
+	b, _ := s.ListDir("/src/")
+	if len(a) != len(b) || len(a) != 2 {
+		t.Fatalf("./src/ vs /src/ mismatch: %d vs %d", len(a), len(b))
+	}
+
+	// partial segment filters: "/src/po" → only pool.go.
+	hits, _ := s.ListDir("/src/po")
+	if len(hits) != 1 || hits[0].Name != "pool.go" {
+		t.Errorf("filter /src/po = %+v, want [pool.go]", hits)
+	}
+
+	// missing dir degrades to empty, no error.
+	none, err := s.ListDir("/does/not/exist/x")
+	if err != nil || len(none) != 0 {
+		t.Errorf("missing dir = (%+v, %v), want ([], nil)", none, err)
+	}
+}
+
+func TestResolveBaseHome(t *testing.T) {
+	s := newTestService(t)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home dir")
+	}
+	got, err := s.resolveBase("~")
+	if err != nil || got != home {
+		t.Errorf("resolveBase(~) = (%q,%v), want %q", got, err, home)
+	}
+	if got, _ := s.resolveBase("/"); got != s.root {
+		t.Errorf("resolveBase(/) = %q, want root %q", got, s.root)
+	}
+	if got, _ := s.resolveBase("./src"); got != filepath.Join(s.root, "src") {
+		t.Errorf("resolveBase(./src) = %q", got)
+	}
+}
+
+func mustMkdir(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+}
+func mustWrite(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
 func TestValidateRootRejectsHomeAndSlash(t *testing.T) {
 	if _, err := validateRoot("/"); err == nil {
 		t.Error("expected / to be rejected")

@@ -36,7 +36,10 @@ export interface CmdlineDeps {
     reloadNotes: () => void;                        // re-read notes from disk (Go backend)
     addAnchor: (file: string, lines: string) => void; // anchor active note to code
     createNoteFull: (st: ParsedStatement) => void;    // create a note from a `:*` statement
+    listDir: (input: string) => Promise<FinderEntry[]>; // per-directory file finder (Go backend)
 }
+
+export interface FinderEntry { name: string; isDir: boolean; }
 
 const FREQ_KEY = "noteit.cmd.freq";
 const HIST_KEY = "noteit.cmd.history";
@@ -86,6 +89,13 @@ export class Cmdline {
     private confirming = false;  // true = diálogo "¿borrar el comando?" abierto
     private draftBuffer = "";    // borrador preservado al cerrar con Escape
     private draftCursor = 0;     // posición del caret del borrador
+
+    // file finder (sigil `/`): activo cuando el cursor está sobre un token de ruta
+    private finderActive = false;
+    private finderEntries: FinderEntry[] = [];
+    private finderSel = 0;
+    private finderTok: { start: number; end: number; text: string } | null = null;
+    private finderReq = 0;       // id de petición para descartar respuestas viejas
 
     constructor(deps: CmdlineDeps) {
         this.deps = deps;
@@ -201,6 +211,17 @@ export class Cmdline {
         if (e.key === "Backspace" && (e.ctrlKey || e.metaKey)) {
             if (this.buffer.length) { this.confirming = true; this.renderConfirm(); }
             return;
+        }
+
+        // finder de archivos activo: ↑/↓ navega, Tab/⏎ completa la ruta
+        if (this.finderActive && this.finderEntries.length) {
+            switch (e.key) {
+                case "ArrowDown": this.moveFinder(1); return;
+                case "ArrowUp": this.moveFinder(-1); return;
+                case "Tab": this.completeFinder(); return;
+                case "Enter": this.completeFinder(); return;
+                // Escape, edición y movimiento de cursor caen al switch normal
+            }
         }
 
         switch (e.key) {
@@ -327,11 +348,82 @@ export class Cmdline {
         this.renderBuffer();
         if (this.buffer.trim().startsWith("*")) {
             this.matches = [];
+            // si el cursor está sobre un token de ruta → finder de archivos
+            const tok = this.pathTokenAtCursor();
+            if (tok) { this.startFinder(tok); return; }
+            this.finderActive = false;
+            this.finderEntries = [];
             this.renderStatementPreview();
             return;
         }
+        this.finderActive = false;
         this.computeMatches();
         this.renderSuggest();
+    }
+
+    /* ─────────── finder de archivos (sigil `/`) ─────────── */
+    // Devuelve el token de ruta que rodea al cursor, o null. Un token de ruta
+    // empieza con `/`, `~/` o `./` y aún no tiene `:` (sin líneas/marcador todavía).
+    private pathTokenAtCursor(): { start: number; end: number; text: string } | null {
+        const b = this.buffer;
+        const isSep = (ch: string) => ch === "*" || ch === "#" || ch === ";" || /\s/.test(ch);
+        let start = this.cursor;
+        while (start > 0 && !isSep(b[start - 1])) start--;
+        let end = this.cursor;
+        while (end < b.length && !isSep(b[end])) end++;
+        const text = b.slice(start, end);
+        if (!/^(~\/|\.\/|\/)/.test(text)) return null;
+        if (text.includes(":")) return null; // ya está eligiendo líneas/marcador
+        return { start, end, text };
+    }
+
+    private startFinder(tok: { start: number; end: number; text: string }) {
+        this.finderActive = true;
+        this.finderTok = tok;
+        const req = ++this.finderReq;
+        // pinta de inmediato lo que ya teníamos para que no parpadee
+        this.renderFinder();
+        this.deps.listDir(tok.text).then((entries) => {
+            if (req !== this.finderReq || !this.finderActive) return; // respuesta vieja
+            this.finderEntries = entries;
+            this.finderSel = 0;
+            this.renderFinder();
+        }).catch(() => { /* finder silencioso */ });
+    }
+
+    private moveFinder(delta: number) {
+        if (!this.finderEntries.length) return;
+        const n = this.finderEntries.length;
+        this.finderSel = (this.finderSel + delta + n) % n;
+        this.renderFinder();
+    }
+
+    // Completa la ruta con la entrada seleccionada. Carpeta → agrega `/` y sigue
+    // navegando; archivo → agrega `:` para que escribas líneas o marcador a continuación.
+    private completeFinder() {
+        const tok = this.finderTok;
+        const sel = this.finderEntries[this.finderSel];
+        if (!tok || !sel) return;
+        const lastSlash = tok.text.lastIndexOf("/");
+        const prefix = tok.text.slice(0, lastSlash + 1);     // hasta el último `/`
+        const newTok = prefix + sel.name + (sel.isDir ? "/" : ":");
+        this.buffer = this.buffer.slice(0, tok.start) + newTok + this.buffer.slice(tok.end);
+        this.cursor = tok.start + newTok.length;
+        this.render(true);
+    }
+
+    private renderFinder() {
+        const esc = (s: string) =>
+            s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        if (!this.finderEntries.length) {
+            this.suggestEl.innerHTML = `<li class="cl-empty">sin archivos</li>`;
+            return;
+        }
+        this.suggestEl.innerHTML = this.finderEntries.slice(0, 60).map((e, i) => `
+            <li class="cl-file ${i === this.finderSel ? "sel" : ""}">
+                <span class="cl-file-ico cl-file-${e.isDir ? "dir" : "file"}">${e.isDir ? "▸" : "·"}</span>
+                <span class="cl-file-name">${esc(e.name)}${e.isDir ? "/" : ""}</span>
+            </li>`).join("");
     }
 
     /* Dibuja el buffer con un caret de bloque en la posición del cursor.

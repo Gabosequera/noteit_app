@@ -477,3 +477,40 @@ kbd {
 .cl-chip-anchor { color: var(--fg); font-family: var(--font-mono); }
 .cl-prev-body { margin-top: 8px; color: var(--fg-dim); font-size: 0.82rem; white-space: pre-wrap; }
 .cl-prev-warn { margin-top: 8px; color: #f85149; font-size: 0.78rem; }
+
+/* ───────────────────────── Status cards (in-document) ─────────────────────────
+   A status card is a timestamped "what I'm doing now" block embedded inline in a
+   note document, interleaved with prose. The left accent rail + monospace header
+   echo the reference design; the body reuses the shared .md renderer. */
+.doc-prose { margin: 0.2em 0; }
+.doc-empty {
+    margin: 24px 0; padding: 18px 20px; border: 1px dashed var(--ink-line);
+    border-radius: var(--radius); color: var(--fg-mute); font-size: 0.9rem; line-height: 1.7;
+}
+.doc-empty kbd {
+    font-family: var(--font-mono); font-size: 0.82em; padding: 1px 6px;
+    border-radius: 5px; background: rgba(255,255,255,0.07); color: var(--fg-dim);
+}
+
+.status-card {
+    margin: 16px 0; border: 1px solid var(--ink-line); border-left: 2px solid var(--accent);
+    border-radius: var(--radius-sm); background: var(--bg-card);
+    overflow: hidden; contain: content;
+}
+.status-card .sc-head {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 14px; border-bottom: 1px solid var(--ink-line);
+    background: rgba(255,255,255,0.02);
+    font-family: var(--font-mono); font-size: 0.78rem; color: var(--fg-mute);
+}
+.sc-ts { color: var(--warn); letter-spacing: 0.02em; }
+.sc-spacer { flex: 1; }
+.sc-author { color: var(--fg-dim); }
+.sc-author::before { content: "@"; color: var(--fg-mute); }
+.sc-links {
+    color: var(--accent-2); border: 1px solid rgba(88,166,255,0.30);
+    border-radius: 6px; padding: 1px 7px; font-size: 0.74rem;
+}
+.status-card .sc-body { padding: 12px 14px; }
+.status-card .sc-body > :first-child { margin-top: 0; }
+.status-card .sc-body > :last-child { margin-bottom: 0; }

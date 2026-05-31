@@ -1,6 +1,6 @@
 import "./style.css";
 import { Cmdline } from "./cmdline.js";
-import { NoteService, Note, NewNote, Anchor } from "../bindings/github.com/Gabosequera/noteit_app/index.js";
+import { NoteService, Note, NewNote, Anchor, type Document, type Card } from "../bindings/github.com/Gabosequera/noteit_app/index.js";
 import { tagColor, type ParsedStatement } from "./statement.js";
 
 console.log("%cnoteit", "color:#ff9f45;font-weight:700;font-size:16px");
@@ -71,7 +71,42 @@ let viewMode: "folder" | "tree" = "folder";
 let tagFilter: string | null = null;             // when set, list is filtered to a tag/"folder"
 let baseFolder = "devlog";
 
+/* The open note rendered as a document of blocks (prose + status cards). Loaded
+   lazily when the active note changes; the .md file is the source of truth. */
+let activeDoc: Document | null = null;
+let loadingDocId: string | null = null;
+let docReq = 0;                       // monotonic token: only the newest fetch may commit
+const docFailed = new Set<string>();  // notes whose load errored — don't auto-retry (no render loop)
+
 const escHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+/* escAttr also neutralizes quotes so a value is safe inside a quoted HTML
+   attribute (defense-in-depth for ids that may later be imported/synced). */
+const escAttr = (s: string) => escHtml(s).replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+
+/* With a note open, the composer always writes a status card on Enter. The `:**`
+   marker (and the `space space` shortcut that expands to it) is an explicit, muscle-
+   memory way to start one; it is purely a prefix we strip from the body before
+   sending, not a behavioral switch. stripCardPrefix removes it if present. */
+const CARD_PREFIX = ":**";
+function stripCardPrefix(s: string): string {
+    const t = s.replace(/^\s+/, "");
+    if (t.startsWith(CARD_PREFIX)) return t.slice(CARD_PREFIX.length).replace(/^\s+/, "");
+    return s;
+}
+
+/* bodyPreview builds the one-line sidebar snippet. Card fences (`:::card …` and
+   the bare `:::` close) are dropped so the list shows readable prose/status text,
+   never raw fence syntax. */
+function bodyPreview(body: string): string {
+    const cleaned = (body ?? "")
+        .split("\n")
+        .filter((l) => {
+            const t = l.replace(/\r$/, "").trimStart();   // tolerate indented fences
+            return !t.startsWith(":::card") && t !== ":::";
+        })
+        .join(" ");
+    return cleaned.replace(/[#>*`\-]/g, "").replace(/\s+/g, " ").trim().slice(0, 60);
+}
 
 /* ───────────────────────── Derived data ───────────────────────── */
 function visibleNotes(): DeckNote[] {
@@ -159,15 +194,66 @@ function metaBlock(n: DeckNote) {
     });
     return chips.length ? `<div class="chips">${chips.join("")}</div>` : "";
 }
+/* A single status card, rendered like the reference design: a timestamped,
+   authored block with the body as (code-aware) markdown. Card content is kept
+   verbatim by the backend, so what you typed is what renders. */
+function renderCardBlock(c: Card): string {
+    const ts = fmtWhen(c.created);
+    const author = escHtml(c.author || "local");
+    const links = c.links ?? [];
+    const linkBadge = links.length
+        ? `<span class="sc-links" title="${links.length} enlace(s) a otras tarjetas">↬ ${links.length}</span>`
+        : "";
+    return `<article class="status-card" data-card-id="${escAttr(c.id)}">
+        <header class="sc-head">
+            <span class="sc-ts">${ts}</span>
+            <span class="sc-spacer"></span>
+            ${linkBadge}
+            <span class="sc-author">${author}</span>
+        </header>
+        <div class="sc-body md">${renderMarkdown(c.body || "")}</div>
+    </article>`;
+}
+
+/* Render the open note as an interleaved document: prose blocks and cards in the
+   exact order they appear in the file. */
+function renderDocBlocks(doc: Document): string {
+    const blocks = doc.blocks ?? [];
+    if (blocks.length === 0) {
+        return `<div class="doc-empty">documento vacío — escribí abajo y pulsá <kbd>⏎</kbd> para tu primera tarjeta de estatus. <kbd>espacio espacio</kbd> inserta el marcador <kbd>:**</kbd>.</div>`;
+    }
+    let html = "";
+    for (const b of blocks) {
+        if (b.kind === "card" && b.card) html += renderCardBlock(b.card);
+        else if ((b.text ?? "").trim()) html += `<div class="md doc-prose">${renderMarkdown(b.text ?? "")}</div>`;
+    }
+    return html;
+}
+
 function renderDetail() {
     const list = visibleNotes();
     if (list.length === 0) {
-        detailScroll.innerHTML = `<div class="detail-empty"><p>no notes yet — press <kbd>i</kbd>, type a title, hit <kbd>⏎</kbd></p></div>`;
+        detailScroll.innerHTML = `<div class="detail-empty"><p>aún no hay notas — escribí abajo y pulsá <kbd>⏎</kbd></p></div>`;
         return;
     }
     if (active >= list.length) active = list.length - 1;
     if (active < 0) active = 0;
     const n = list[active];
+
+    // Document body: use the parsed blocks when they belong to this note; while a
+    // different note's document is still loading, fall back to the raw markdown so
+    // switching notes never shows a blank pane.
+    let bodyHtml: string;
+    if (activeDoc && activeDoc.note && activeDoc.note.id === n.id) {
+        bodyHtml = renderDocBlocks(activeDoc);
+    } else {
+        // Raw markdown is a safe fallback while the parsed document loads. We only
+        // kick off a fetch when one isn't already running AND this note hasn't just
+        // failed — otherwise the error path's re-render would retry forever.
+        bodyHtml = `<div class="md">${renderMarkdown(n.body)}</div>`;
+        if (loadingDocId !== n.id && !docFailed.has(n.id)) void loadActiveDocument(n.id);
+    }
+
     detailScroll.innerHTML =
         `<div class="dn-head">
             <span class="when"><span class="status" style="--c:${n.color}"></span>${n.when}</span>
@@ -175,9 +261,29 @@ function renderDetail() {
         </div>
         <h1 class="dn-title"><span class="hash">#</span>${escHtml(n.title)}</h1>
         ${metaBlock(n)}
-        <div class="md">${renderMarkdown(n.body)}</div>
+        ${bodyHtml}
         ${anchorsBlock(n)}`;
     detailScroll.scrollTop = 0;
+}
+
+/* Lazily fetch the active note's parsed document. Guarded so a burst of renders
+   (e.g. fast j/k navigation) issues at most one in-flight fetch per note. */
+async function loadActiveDocument(id: string) {
+    if (loadingDocId === id) return;
+    loadingDocId = id;
+    const token = ++docReq;
+    try {
+        const doc = await NoteService.GetDocument(id);
+        if (token !== docReq) return;        // a newer navigation superseded this fetch
+        activeDoc = doc;
+        docFailed.delete(id);
+    } catch (err) {
+        console.error("GetDocument failed", err);
+        if (token === docReq) docFailed.add(id);  // stop auto-retry; reload clears this
+    } finally {
+        if (loadingDocId === id) loadingDocId = null;
+        renderDetail();
+    }
 }
 
 /* ───────────────────────── Sidebar (note list / tree) ───────────────────────── */
@@ -199,7 +305,7 @@ function renderSidebar() {
     list.forEach((n, i) => {
         const el = document.createElement("div");
         el.className = "note-item" + (i === active ? " is-active" : "");
-        const preview = n.body.replace(/[#>*`\-]/g, "").replace(/\s+/g, " ").trim().slice(0, 60);
+        const preview = bodyPreview(n.body);
         const tags = n.tags.slice(0, 3).map((t) => `<span class="ni-tag" style="--c:${tagColor(t)}">${escHtml(t)}</span>`).join("");
         el.innerHTML =
             `<div class="ni-top">
@@ -257,6 +363,7 @@ let creating = false;
 async function loadNotes() {
     try {
         const list = await NoteService.ListNotes();
+        docFailed.clear();   // a fresh load is the user's retry path for previously-failed docs
         NOTES = (list ?? []).map(mapNote);
         const vis = visibleNotes();
         if (active >= vis.length) active = Math.max(0, vis.length - 1);
@@ -316,6 +423,38 @@ async function createNoteFromStatement(st: ParsedStatement) {
     } catch (err) {
         console.error("CreateNoteFull failed", err);
         notify("error al crear la nota (revisá estado/prioridad)");
+    } finally {
+        creating = false;
+    }
+}
+
+/* addCardToActive appends a status card to the currently open note. The returned
+   Document already carries the freshly-parsed blocks, so we adopt it directly
+   instead of issuing a second GetDocument round-trip — keeping the write path
+   lightning-fast. The note's raw body is patched in place so the sidebar preview
+   and any markdown fallback stay consistent without a full reload. */
+async function addCardToActive(body: string) {
+    const list = visibleNotes();
+    if (list.length === 0) { notify("no hay nota activa para una tarjeta"); return; }
+    const text = body.trim();
+    if (!text || creating) return;
+    const id = list[active].id;
+    creating = true;
+    try {
+        const doc = await NoteService.AddCard(id, text);
+        activeDoc = doc;
+        const idx = NOTES.findIndex((n) => n.id === id);
+        if (idx >= 0) NOTES[idx].body = doc.note?.body ?? NOTES[idx].body;
+        cmdInput.value = "";
+        updateBarCaret();
+        renderSidebar();
+        renderDetail();
+        const cards = detailScroll.querySelectorAll(".status-card");
+        cards[cards.length - 1]?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        notify("✓ tarjeta de estatus");
+    } catch (err) {
+        console.error("AddCard failed", err);
+        notify("no se pudo crear la tarjeta");
     } finally {
         creating = false;
     }
@@ -457,7 +596,12 @@ function setMode(next: Mode) {
     else { cmdInput.blur(); updateBarCaret(); }
 }
 
-cmdInput.addEventListener("input", updateBarCaret);
+/* `space space` on an empty composer expands to the `:**` status-card marker, so
+   the fast path to a new status card never leaves the keyboard. */
+cmdInput.addEventListener("input", () => {
+    if (cmdInput.value === "  ") cmdInput.value = CARD_PREFIX + " ";
+    updateBarCaret();
+});
 
 window.addEventListener("keydown", (ev) => {
     if (cmdline.isOpen()) return;
@@ -474,8 +618,14 @@ window.addEventListener("keydown", (ev) => {
         return;
     }
 
-    // INSERT mode
-    if (ev.key === "Enter") { ev.preventDefault(); void createNoteFromInput(); return; }
+    // INSERT mode. With a note open, the composer writes status cards into it;
+    // with no notes yet, Enter bootstraps the first note from the typed title.
+    if (ev.key === "Enter") {
+        ev.preventDefault();
+        if (visibleNotes().length > 0) void addCardToActive(stripCardPrefix(cmdInput.value));
+        else void createNoteFromInput();
+        return;
+    }
     if (ev.key === "ArrowDown") { move(1); ev.preventDefault(); }
     else if (ev.key === "ArrowUp") { move(-1); ev.preventDefault(); }
 });
