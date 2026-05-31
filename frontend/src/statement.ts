@@ -13,6 +13,10 @@
      · El titulo y el cuerpo pueden ir en cualquier posicion.
      · `+x`  -> tag (texto libre)            · `@x` -> persona
      · `path:10-20` -> ancla al codigo        · palabra cerrada -> estado o prioridad
+     · `future`/`next`/`coming`/`missing`/… -> tag canonico `future` (lo que falta
+       por implementar y debe venir despues). Con o sin `+`.
+     · tags de convencion (bug/fix/refactor/feature/docs/test…) se reconocen aunque
+       no lleven `+`, asi podes filtrar por ellos directo.
      · la rama NO se escribe: la rellena el backend desde git.
    Los campos sueltos que no caen en ninguna lista cerrada se reportan como warnings
    en vez de inventar un significado. */
@@ -34,7 +38,7 @@ export interface ParsedStatement {
 // Vocabularios cerrados: alias (lo que tipeas) -> forma canonica (lo que se guarda).
 const STATUS_ALIASES: Record<string, string> = {
     todo: "todo", "to-do": "todo", pendiente: "todo",
-    future: "todo", next: "todo", incompleted: "todo", incomplete: "todo",
+    incompleted: "todo", incomplete: "todo",
     working: "working", inprocess: "working", "in-process": "working",
     inprogress: "working", "in-progress": "working", wip: "working",
     haciendo: "working", doing: "working",
@@ -48,6 +52,18 @@ const PRIORITY_ALIASES: Record<string, string> = {
     high: "high", hi: "high", alta: "high",
     urgent: "high", urgente: "high", emergency: "high", emergencia: "high"
 };
+
+/* "future": cosas que faltan / no quedaron implementadas y deben venir despues.
+   Todos estos alias se normalizan al tag canonico `future` (color violeta), asi se
+   filtran juntos sin importar como los escribas. Funciona con o sin `+`. */
+const FUTURE_TAG = "future";
+const FUTURE_ALIASES = new Set([
+    "future", "next", "coming", "comming", "upcoming",
+    "missing", "pending", "later", "soon", "todo-later"
+]);
+function futureCanonical(word: string): string | null {
+    return FUTURE_ALIASES.has(word.toLowerCase()) ? FUTURE_TAG : null;
+}
 
 /* Colores por convencion de tag. El color comunica el tipo de trabajo:
    un bug es rojo SIEMPRE, una feature verde, docs azul, etc. El `+` no se
@@ -128,7 +144,12 @@ export function parseStatement(raw: string): ParsedStatement {
 
     for (const t of tokens) {
         if (t === "nn" || t === "newnote") { out.action = "nn"; continue; }
-        if (t.startsWith("+")) { const v = t.slice(1).trim(); if (v) out.tags.push(v); continue; }
+        // `+x` -> tag explicito. Si es de la familia "future", se normaliza a `future`.
+        if (t.startsWith("+")) {
+            const v = t.slice(1).trim();
+            if (v) out.tags.push(futureCanonical(v) ?? v);
+            continue;
+        }
         if (t.startsWith("@")) { const v = t.slice(1).trim(); if (v) out.people.push(v); continue; }
         if (looksLikeAnchor(t)) {
             const a = parseAnchor(t);
@@ -137,10 +158,18 @@ export function parseStatement(raw: string): ParsedStatement {
             continue;
         }
         const lower = t.toLowerCase();
+        // future-family sin `+` (future/next/coming/missing…) -> tag `future`
+        const fut = futureCanonical(lower);
+        if (fut) { out.tags.push(fut); continue; }
         if (STATUS_ALIASES[lower]) { out.status = STATUS_ALIASES[lower]; continue; }
         if (PRIORITY_ALIASES[lower]) { out.priority = PRIORITY_ALIASES[lower]; continue; }
+        // tag conocido por convencion (bug/fix/refactor/feature/docs…) sin `+`
+        if (TAG_COLORS[lower]) { out.tags.push(lower); continue; }
         out.warnings.push(t);
     }
+
+    // sin duplicados (p.ej. `*future*` + `*next*` o `+bug` + `bug`)
+    out.tags = Array.from(new Set(out.tags));
 
     if (!out.action) out.action = "nn"; // por defecto: nueva nota
     return out;
