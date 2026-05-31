@@ -1,0 +1,454 @@
+package main
+
+import (
+	"errors"
+	"fmt"
+	"log"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/google/uuid"
+)
+
+// NoteService is the Wails-bound backend for Piece 1: per-project note storage.
+// Notes are plain Markdown files in <project>/.noteit/notes/<id>.md. These files
+// are the durable source of truth; nothing else here is a cache yet.
+type NoteService struct {
+	mu      sync.Mutex
+	root    string // resolved project root (dir that contains .noteit/)
+	rootErr error  // if project root could not be safely resolved
+}
+
+// NewNoteService resolves the project root ONCE and ensures the vault exists.
+// Resolution order: $NOTEIT_PROJECT -> nearest ancestor with .git -> $CWD.
+// We refuse to operate on "/" or the user's home dir to avoid scattering a
+// .noteit/ in a meaningless location.
+func NewNoteService() *NoteService {
+	s := &NoteService{}
+	root, err := resolveProjectRoot()
+	if err != nil {
+		s.rootErr = err
+		log.Printf("noteit: project root unresolved: %v", err)
+		return s
+	}
+	s.root = root
+	if err := s.ensureVault(); err != nil {
+		s.rootErr = err
+		log.Printf("noteit: ensureVault failed: %v", err)
+		return s
+	}
+	log.Printf("noteit: vault ready at %s", s.notesDir())
+	return s
+}
+
+func resolveProjectRoot() (string, error) {
+	if p := strings.TrimSpace(os.Getenv("NOTEIT_PROJECT")); p != "" {
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			return "", fmt.Errorf("NOTEIT_PROJECT invalid: %w", err)
+		}
+		return validateRoot(abs)
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("getwd: %w", err)
+	}
+
+	if gitRoot := walkUpForGit(cwd); gitRoot != "" {
+		return validateRoot(gitRoot)
+	}
+	return validateRoot(cwd)
+}
+
+// walkUpForGit returns the nearest ancestor (including start) containing a .git
+// entry, or "" if none is found before the filesystem root.
+func walkUpForGit(start string) string {
+	dir := start
+	for {
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+}
+
+func validateRoot(dir string) (string, error) {
+	if dir == "/" || dir == "" {
+		return "", errors.New("refusing to use filesystem root as project; set NOTEIT_PROJECT or run inside a project")
+	}
+	if home, err := os.UserHomeDir(); err == nil && filepath.Clean(dir) == filepath.Clean(home) {
+		return "", errors.New("refusing to use home directory as project; set NOTEIT_PROJECT or run inside a project")
+	}
+	return dir, nil
+}
+
+func (s *NoteService) noteitDir() string { return filepath.Join(s.root, ".noteit") }
+func (s *NoteService) notesDir() string  { return filepath.Join(s.noteitDir(), "notes") }
+
+// ensureVault creates .noteit/notes/ and writes .noteit/.gitignore = "*" so
+// notes are private-by-default without touching the project's root .gitignore.
+func (s *NoteService) ensureVault() error {
+	if err := os.MkdirAll(s.notesDir(), 0o755); err != nil {
+		return fmt.Errorf("mkdir notes: %w", err)
+	}
+	gitignore := filepath.Join(s.noteitDir(), ".gitignore")
+	if _, err := os.Stat(gitignore); errors.Is(err, os.ErrNotExist) {
+		if err := os.WriteFile(gitignore, []byte("*\n"), 0o644); err != nil {
+			return fmt.Errorf("write .gitignore: %w", err)
+		}
+	}
+	return nil
+}
+
+// ProjectRoot reports the resolved project root (for the UI to display), or the
+// resolution error message.
+func (s *NoteService) ProjectRoot() string {
+	if s.rootErr != nil {
+		return ""
+	}
+	return s.root
+}
+
+// CreateNote writes a new note to disk and returns it. title's first line is the
+// title; the rest of `title` plus `body` is irrelevant here — the frontend sends
+// a clean title + body. The note id is a server-generated UUIDv7; the frontend
+// never controls the filename.
+func (s *NoteService) CreateNote(title, body string) (Note, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.rootErr != nil {
+		return Note{}, s.rootErr
+	}
+
+	id, err := uuid.NewV7()
+	if err != nil {
+		return Note{}, fmt.Errorf("generate id: %w", err)
+	}
+	now := time.Now().UTC()
+
+	title = strings.TrimSpace(title)
+	if title == "" {
+		title = "untitled"
+	}
+
+	n := Note{
+		ID:      id.String(),
+		Title:   title,
+		Created: now,
+		Updated: now,
+		Tags:    []string{},
+		Status:  "todo",
+		Body:    body,
+	}
+
+	data, err := n.render()
+	if err != nil {
+		return Note{}, fmt.Errorf("render note: %w", err)
+	}
+	if err := s.writeAtomic(n.ID, data); err != nil {
+		return Note{}, err
+	}
+	return n, nil
+}
+
+// writeAtomic writes to a temp file in the notes dir then renames into place, so
+// a reader never sees a half-written note. id is validated to be a clean UUID so
+// it can never escape notesDir.
+func (s *NoteService) writeAtomic(id string, data []byte) error {
+	if _, err := uuid.Parse(id); err != nil {
+		return fmt.Errorf("refusing to write note with invalid id %q: %w", id, err)
+	}
+	dir := s.notesDir()
+	tmp, err := os.CreateTemp(dir, ".tmp-*.md")
+	if err != nil {
+		return fmt.Errorf("create temp: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op if rename succeeded
+
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return fmt.Errorf("write temp: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("sync temp: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp: %w", err)
+	}
+
+	final := filepath.Join(dir, id+".md")
+	if err := os.Rename(tmpName, final); err != nil {
+		return fmt.Errorf("rename note into place: %w", err)
+	}
+	return nil
+}
+
+// ListNotes reads and parses every note file, newest-first by Created. Malformed
+// files are skipped with a logged warning rather than failing the whole list.
+func (s *NoteService) ListNotes() ([]Note, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.rootErr != nil {
+		return nil, s.rootErr
+	}
+
+	entries, err := os.ReadDir(s.notesDir())
+	if err != nil {
+		return nil, fmt.Errorf("read notes dir: %w", err)
+	}
+
+	notes := make([]Note, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(s.notesDir(), e.Name()))
+		if err != nil {
+			log.Printf("noteit: skip %s: %v", e.Name(), err)
+			continue
+		}
+		n, err := parseNote(raw)
+		if err != nil {
+			log.Printf("noteit: skip malformed %s: %v", e.Name(), err)
+			continue
+		}
+		notes = append(notes, n)
+	}
+
+	sort.SliceStable(notes, func(i, j int) bool {
+		return notes[i].Created.After(notes[j].Created)
+	})
+	return notes, nil
+}
+
+// GetNote returns a single note by id, including its body.
+func (s *NoteService) GetNote(id string) (Note, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.rootErr != nil {
+		return Note{}, s.rootErr
+	}
+	if _, err := uuid.Parse(id); err != nil {
+		return Note{}, fmt.Errorf("invalid id: %w", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(s.notesDir(), id+".md"))
+	if err != nil {
+		return Note{}, fmt.Errorf("read note: %w", err)
+	}
+	return parseNote(raw)
+}
+
+// AddAnchor attaches a code reference (file + line range) to an existing note and
+// rewrites it to disk. This is the "Level A" pin: we also stamp the project's
+// current git commit so the anchor records the exact state it pointed at. The
+// note id is validated and the file rewrite is atomic.
+func (s *NoteService) AddAnchor(noteID, file, lines string) (Note, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.rootErr != nil {
+		return Note{}, s.rootErr
+	}
+	if _, err := uuid.Parse(noteID); err != nil {
+		return Note{}, fmt.Errorf("invalid id: %w", err)
+	}
+
+	file = strings.TrimSpace(file)
+	if file == "" {
+		return Note{}, errors.New("anchor needs a file path")
+	}
+	lines = strings.TrimSpace(lines)
+	if err := validateLineRange(lines); err != nil {
+		return Note{}, err
+	}
+
+	raw, err := os.ReadFile(filepath.Join(s.notesDir(), noteID+".md"))
+	if err != nil {
+		return Note{}, fmt.Errorf("read note: %w", err)
+	}
+	n, err := parseNote(raw)
+	if err != nil {
+		return Note{}, err
+	}
+
+	n.Anchors = append(n.Anchors, Anchor{
+		File:   filepath.ToSlash(filepath.Clean(file)),
+		Lines:  lines,
+		Commit: s.currentCommit(),
+	})
+	n.Updated = time.Now().UTC()
+
+	data, err := n.render()
+	if err != nil {
+		return Note{}, fmt.Errorf("render note: %w", err)
+	}
+	if err := s.writeAtomic(n.ID, data); err != nil {
+		return Note{}, err
+	}
+	return n, nil
+}
+
+// NewNote is the structured input for CreateNoteFull — the result of the
+// frontend parsing a `:*` statement. Status/priority arrive already normalized
+// to their canonical forms; the backend re-validates as a safety net and fills
+// the git branch itself.
+type NewNote struct {
+	Title    string   `json:"title"`
+	Body     string   `json:"body"`
+	Tags     []string `json:"tags"`
+	Status   string   `json:"status"`
+	Priority string   `json:"priority"`
+	People   []string `json:"people"`
+	Anchors  []Anchor `json:"anchors"`
+}
+
+var (
+	validStatus   = map[string]bool{"todo": true, "working": true, "blocked": true, "done": true}
+	validPriority = map[string]bool{"low": true, "medium": true, "high": true}
+)
+
+// CreateNoteFull writes a note assembled from a parsed `:*` statement: title,
+// body, tags, status, priority, people and code anchors in one shot. The git
+// branch is auto-filled from the project. Unknown status/priority values are
+// rejected rather than silently stored.
+func (s *NoteService) CreateNoteFull(in NewNote) (Note, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.rootErr != nil {
+		return Note{}, s.rootErr
+	}
+
+	status := strings.TrimSpace(in.Status)
+	if status == "" {
+		status = "todo"
+	}
+	if !validStatus[status] {
+		return Note{}, fmt.Errorf("unknown status %q", status)
+	}
+	priority := strings.TrimSpace(in.Priority)
+	if priority != "" && !validPriority[priority] {
+		return Note{}, fmt.Errorf("unknown priority %q", priority)
+	}
+
+	for _, a := range in.Anchors {
+		if strings.TrimSpace(a.File) == "" {
+			return Note{}, errors.New("anchor needs a file path")
+		}
+		if err := validateLineRange(a.Lines); err != nil {
+			return Note{}, err
+		}
+	}
+
+	id, err := uuid.NewV7()
+	if err != nil {
+		return Note{}, fmt.Errorf("generate id: %w", err)
+	}
+	now := time.Now().UTC()
+
+	title := strings.TrimSpace(in.Title)
+	if title == "" {
+		title = "untitled"
+	}
+
+	commit := s.currentCommit()
+	anchors := make([]Anchor, 0, len(in.Anchors))
+	for _, a := range in.Anchors {
+		anchors = append(anchors, Anchor{
+			File:   filepath.ToSlash(filepath.Clean(a.File)),
+			Lines:  strings.TrimSpace(a.Lines),
+			Commit: commit,
+		})
+	}
+
+	n := Note{
+		ID:       id.String(),
+		Title:    title,
+		Created:  now,
+		Updated:  now,
+		Tags:     normalizeList(in.Tags),
+		Status:   status,
+		Priority: priority,
+		Branch:   s.currentBranch(),
+		People:   normalizeList(in.People),
+		Anchors:  anchors,
+		Body:     in.Body,
+	}
+
+	data, err := n.render()
+	if err != nil {
+		return Note{}, fmt.Errorf("render note: %w", err)
+	}
+	if err := s.writeAtomic(n.ID, data); err != nil {
+		return Note{}, err
+	}
+	return n, nil
+}
+
+// normalizeList trims, drops empties and de-dupes while preserving order.
+func normalizeList(in []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(in))
+	for _, v := range in {
+		v = strings.TrimSpace(v)
+		if v == "" || seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	return out
+}
+
+// currentBranch returns the project's current git branch, or "" if not a repo
+// or in a detached HEAD.
+func (s *NoteService) currentBranch() string {
+	cmd := exec.Command("git", "-C", s.root, "branch", "--show-current")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// validateLineRange accepts a single line ("42") or an inclusive range
+// ("166-195"). Bounds must be positive and start <= end.
+func validateLineRange(s string) error {
+	if s == "" {
+		return errors.New("anchor needs a line or range, e.g. 166-195")
+	}
+	lo, hi, found := strings.Cut(s, "-")
+	start, err := strconv.Atoi(strings.TrimSpace(lo))
+	if err != nil || start < 1 {
+		return fmt.Errorf("invalid line %q (want N or N-M)", s)
+	}
+	if found {
+		end, err := strconv.Atoi(strings.TrimSpace(hi))
+		if err != nil || end < start {
+			return fmt.Errorf("invalid range %q (want N-M with N<=M)", s)
+		}
+	}
+	return nil
+}
+
+// currentCommit returns the project's short git HEAD, or "" if the project is
+// not a git repo (anchors still work, they just won't record a commit).
+func (s *NoteService) currentCommit() string {
+	cmd := exec.Command("git", "-C", s.root, "rev-parse", "--short", "HEAD")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}

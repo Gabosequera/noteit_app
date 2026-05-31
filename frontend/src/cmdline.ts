@@ -8,6 +8,8 @@
      · cursor de bloque estilo nvim (buffer manejado, no <input>)
    La navegación real del filesystem necesita una binding de Go (ver runFs). */
 
+import { parseStatement, tagColor, type ParsedStatement } from "./statement.js";
+
 export interface CmdContext {
     arg: string;             // texto después del nombre del comando
     notify: (msg: string) => void;
@@ -31,6 +33,9 @@ export interface CmdlineDeps {
     toggleTheme: () => void;
     notify: (msg: string) => void;
     runFs: (op: "cd" | "e", path: string) => void; // hook backend (Go/Wails)
+    reloadNotes: () => void;                        // re-read notes from disk (Go backend)
+    addAnchor: (file: string, lines: string) => void; // anchor active note to code
+    createNoteFull: (st: ParsedStatement) => void;    // create a note from a `:*` statement
 }
 
 const FREQ_KEY = "noteit.cmd.freq";
@@ -67,15 +72,20 @@ export class Cmdline {
     private overlay: HTMLElement;
     private textEl: HTMLElement;
     private suggestEl: HTMLElement;
+    private confirmEl: HTMLElement;
 
     private open = false;
     private buffer = "";
+    private cursor = 0;          // posición del caret dentro de buffer (0..length)
     private freq: Record<string, number>;
     private history: string[];
     private histIdx = -1;        // -1 = buffer en vivo
     private selected = 0;        // índice en la lista de sugerencias
     private matches: Command[] = [];
     private tabBase: string | null = null; // base para ciclar con Tab
+    private confirming = false;  // true = diálogo "¿borrar el comando?" abierto
+    private draftBuffer = "";    // borrador preservado al cerrar con Escape
+    private draftCursor = 0;     // posición del caret del borrador
 
     constructor(deps: CmdlineDeps) {
         this.deps = deps;
@@ -114,6 +124,16 @@ export class Cmdline {
               } },
             { id: "theme", hint: "toggle light/dark", group: "app",
               run: () => this.deps.toggleTheme() },
+            { id: "reload", aliases: ["r"], hint: "re-read notes from disk", group: "app",
+              run: () => this.deps.reloadNotes() },
+            { id: "anchor", aliases: ["a"], hint: "anchor active note to code — :anchor <file> <lines>", group: "note", takesArg: true,
+              run: ({ arg, notify }) => {
+                  const parts = arg.trim().split(/\s+/).filter(Boolean);
+                  if (parts.length < 2) { notify("uso: :anchor <archivo> <líneas>  (ej: :anchor noteservice.go 166-195)"); return; }
+                  const lines = parts.pop() as string;
+                  const file = parts.join(" ");
+                  this.deps.addAnchor(file, lines);
+              } },
             { id: "edit", aliases: ["e"], hint: "open file/folder — :e <path>", group: "fs", takesArg: true,
               run: ({ arg }) => this.deps.runFs("e", arg) },
             { id: "cd", hint: "change directory — :cd <path>", group: "fs", takesArg: true,
@@ -129,22 +149,36 @@ export class Cmdline {
         this.overlay = document.getElementById("cmdlineOverlay")!;
         this.textEl = document.getElementById("clText")!;
         this.suggestEl = document.getElementById("clSuggest")!;
+        this.confirmEl = document.getElementById("clConfirm")!;
     }
 
     /* ─────────── ciclo de vida ─────────── */
     show() {
         this.open = true;
-        this.buffer = "";
+        // restaurar borrador (texto + posición del cursor) si quedó algo de antes
+        this.buffer = this.draftBuffer;
+        this.cursor = Math.min(this.draftCursor, this.buffer.length);
         this.histIdx = -1;
         this.tabBase = null;
+        this.confirming = false;
         this.overlay.hidden = false;
         this.overlay.classList.add("visible");
         this.render();
     }
-    hide() {
+    /* Cierra el overlay. Por defecto preserva el borrador (Escape); al ejecutar
+       un comando se limpia con clearDraft() antes de cerrar. */
+    private hide() {
+        this.draftBuffer = this.buffer;
+        this.draftCursor = this.cursor;
+        this.confirming = false;
+        this.confirmEl.hidden = true;
         this.open = false;
         this.overlay.classList.remove("visible");
         this.overlay.hidden = true;
+    }
+    private clearDraft() {
+        this.buffer = ""; this.cursor = 0;
+        this.draftBuffer = ""; this.draftCursor = 0;
     }
 
     /* ─────────── teclado ─────────── */
@@ -154,25 +188,69 @@ export class Cmdline {
         e.preventDefault();
         e.stopPropagation();
 
+        // diálogo de confirmación de borrado total: Enter borra, lo demás cancela
+        if (this.confirming) {
+            if (e.key === "Enter") { this.clearDraft(); this.tabBase = null; this.histIdx = -1; }
+            this.confirming = false;
+            this.confirmEl.hidden = true;
+            this.render();
+            return;
+        }
+
+        // Ctrl+Backspace → abrir confirmación para borrar todo el comando
+        if (e.key === "Backspace" && (e.ctrlKey || e.metaKey)) {
+            if (this.buffer.length) { this.confirming = true; this.renderConfirm(); }
+            return;
+        }
+
         switch (e.key) {
-            case "Escape": this.hide(); return;
+            case "Escape": this.hide(); return;        // preserva borrador + cursor
             case "Enter": this.execute(); return;
-            case "Backspace": this.buffer = this.buffer.slice(0, -1); this.tabBase = null; break;
+            case "Backspace":
+                if (this.cursor > 0) {
+                    this.buffer = this.buffer.slice(0, this.cursor - 1) + this.buffer.slice(this.cursor);
+                    this.cursor--;
+                }
+                this.tabBase = null;
+                break;
+            case "Delete":
+                if (this.cursor < this.buffer.length) {
+                    this.buffer = this.buffer.slice(0, this.cursor) + this.buffer.slice(this.cursor + 1);
+                }
+                this.tabBase = null;
+                break;
+            case "ArrowLeft": if (this.cursor > 0) this.cursor--; this.render(true); return;
+            case "ArrowRight": if (this.cursor < this.buffer.length) this.cursor++; this.render(true); return;
+            case "Home": this.cursor = 0; this.render(true); return;
+            case "End": this.cursor = this.buffer.length; this.render(true); return;
             case "Tab": this.complete(e.shiftKey ? -1 : 1); return;
             case "ArrowDown": this.moveSel(1); return;
             case "ArrowUp": this.histIdx === -1 && this.matches.length > 1 ? this.moveSel(-1) : this.historyPrev(); return;
             default:
-                if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) { this.buffer += e.key; this.tabBase = null; }
-                else return;
+                if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
+                    this.buffer = this.buffer.slice(0, this.cursor) + e.key + this.buffer.slice(this.cursor);
+                    this.cursor++;
+                    this.tabBase = null;
+                } else return;
         }
         this.histIdx = -1;
         this.render();
+    }
+
+    private renderConfirm() {
+        this.confirmEl.innerHTML =
+            `<div class="cl-confirm-box">` +
+            `<span class="cl-confirm-q">¿borrar todo el comando?</span>` +
+            `<span class="cl-confirm-hint"><kbd>⏎</kbd> borrar · cualquier otra tecla cancela</span>` +
+            `</div>`;
+        this.confirmEl.hidden = false;
     }
 
     private historyPrev() {
         if (!this.history.length) return;
         this.histIdx = Math.min(this.histIdx + 1, this.history.length - 1);
         this.buffer = this.history[this.history.length - 1 - this.histIdx] ?? this.buffer;
+        this.cursor = this.buffer.length;
         this.render();
     }
 
@@ -188,6 +266,7 @@ export class Cmdline {
         if (this.tabBase === null) this.tabBase = this.buffer;
         this.selected = (this.selected + dir + this.matches.length) % this.matches.length;
         this.buffer = this.matches[this.selected].id + " ";
+        this.cursor = this.buffer.length;
         this.render(true); // preservar selección
     }
 
@@ -210,7 +289,19 @@ export class Cmdline {
     /* ─────────── ejecución ─────────── */
     private execute() {
         const raw = this.buffer.trim();
-        if (!raw) { this.hide(); return; }
+        if (!raw) { this.clearDraft(); this.hide(); return; }
+
+        // `*…` is a multi-field new-note statement, not a registry command.
+        if (raw.startsWith("*")) {
+            this.history = [...this.history.filter(h => h !== raw), raw].slice(-50);
+            saveJSON(HIST_KEY, this.history);
+            const st = parseStatement(raw);
+            this.clearDraft();
+            this.hide();
+            this.deps.createNoteFull(st);
+            return;
+        }
+
         const [head, ...rest] = raw.split(/\s+/);
         const arg = rest.join(" ");
         const cmd = this.matches[0] && this.matches[0].id.startsWith(head)
@@ -221,10 +312,11 @@ export class Cmdline {
         this.history = [...this.history.filter(h => h !== raw), raw].slice(-50);
         saveJSON(HIST_KEY, this.history);
 
-        if (!cmd) { this.deps.notify(`:${head} no es un comando`); this.hide(); return; }
+        if (!cmd) { this.deps.notify(`:${head} no es un comando`); this.clearDraft(); this.hide(); return; }
         this.freq[cmd.id] = (this.freq[cmd.id] ?? 0) + 1;
         saveJSON(FREQ_KEY, this.freq);
 
+        this.clearDraft();
         this.hide();
         cmd.run({ arg, notify: this.deps.notify });
     }
@@ -232,10 +324,55 @@ export class Cmdline {
     /* ─────────── render ─────────── */
     private render(keepSel = false) {
         if (!keepSel) this.selected = 0;
+        this.renderBuffer();
+        if (this.buffer.trim().startsWith("*")) {
+            this.matches = [];
+            this.renderStatementPreview();
+            return;
+        }
         this.computeMatches();
-        // cursor de bloque nvim: bloque sólido al final del buffer
-        this.textEl.textContent = this.buffer;
         this.renderSuggest();
+    }
+
+    /* Dibuja el buffer con un caret de bloque en la posición del cursor.
+       El caret va "encima" del carácter en this.cursor (o al final si está al borde). */
+    private renderBuffer() {
+        const esc = (s: string) =>
+            s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        const b = this.buffer;
+        const c = Math.min(this.cursor, b.length);
+        const before = esc(b.slice(0, c));
+        const atRaw = b.slice(c, c + 1);
+        const after = esc(b.slice(c + 1));
+        // un espacio (nbsp) cuando el caret está al final, para que el bloque se vea
+        const at = atRaw ? esc(atRaw) : "\u00A0";
+        this.textEl.innerHTML =
+            `${before}<span class="cl-caret">${at}</span>${after}`;
+    }
+
+    /* Preview en vivo de un statement `:*` — la etapa "Preview" del parser. */
+    private renderStatementPreview() {
+        const st = parseStatement(this.buffer);
+        const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        const chip = (cls: string, txt: string) => `<span class="cl-chip cl-chip-${cls}">${esc(txt)}</span>`;
+        const parts: string[] = [];
+        parts.push(chip("title", st.title || "untitled"));
+        if (st.status) parts.push(chip("status", st.status));
+        if (st.priority) parts.push(chip("prio", st.priority));
+        // tags: sin `+`, color por convención (bug=rojo…), el sigil se ve al hacer hover.
+        st.tags.forEach((t) => {
+            const col = tagColor(t);
+            parts.push(
+                `<span class="cl-chip cl-chip-tag" title="+${esc(t)}" ` +
+                `style="--tc:${col};color:${col};border-color:${col}55">${esc(t)}</span>`);
+        });
+        st.people.forEach((p) => parts.push(chip("person", "@" + p)));
+        st.anchors.forEach((a) => parts.push(chip("anchor", `⚓ ${a.file}:${a.lines}`)));
+        const body = st.body ? `<div class="cl-prev-body">${esc(st.body)}</div>` : "";
+        const warn = st.warnings.length
+            ? `<div class="cl-prev-warn">⚠ no reconocido: ${st.warnings.map(esc).join(", ")}</div>` : "";
+        this.suggestEl.innerHTML =
+            `<li class="cl-preview"><div class="cl-prev-chips">${parts.join("")}</div>${body}${warn}</li>`;
     }
 
     private renderSuggest() {

@@ -39,6 +39,7 @@ func main() {
 		Description: "Lightning-fast keyboard-driven notes for developers",
 		Services: []application.Service{
 			application.NewService(&GreetService{}),
+			application.NewService(NewNoteService()),
 		},
 		Assets: application.AssetOptions{
 			Handler: application.AssetFileServerFS(assets),
