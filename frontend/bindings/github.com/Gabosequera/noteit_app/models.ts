@@ -113,8 +113,10 @@ export class Card {
     "links"?: string[];
 
     /**
-     * Body is the card's content (status text and/or code). Verbatim between the
-     * fence lines.
+     * Body is the card's content (status text and/or code), preserved byte-for-byte
+     * between the fence lines except for outer blank lines (the fence delimiters
+     * own those). It may span multiple lines but must not contain a line equal to
+     * the bare close fence (enforced on write).
      */
     "body": string;
 
