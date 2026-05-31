@@ -10,6 +10,11 @@ export {
 
 export {
     Anchor,
+    Block,
+    Card,
+    DirEntry,
+    Document,
+    JournalEvent,
     NewNote,
     Note
 } from "./models.js";

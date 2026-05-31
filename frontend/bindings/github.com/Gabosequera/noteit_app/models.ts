@@ -52,6 +52,217 @@ export class Anchor {
 }
 
 /**
+ * Block is one element of a rendered document: either a run of plain prose
+ * ("text") or a card ("card"). The frontend walks Blocks in order to render the
+ * interleaved document. Blocks is a projection of Note.Body — disposable, never
+ * persisted on its own.
+ */
+export class Block {
+    /**
+     * "text" | "card"
+     */
+    "kind": string;
+
+    /**
+     * set when Kind == "text"
+     */
+    "text"?: string;
+
+    /**
+     * set when Kind == "card"
+     */
+    "card"?: Card | null;
+
+    /** Creates a new Block instance. */
+    constructor($$source: Partial<Block> = {}) {
+        if (!("kind" in $$source)) {
+            this["kind"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new Block instance from a string or object.
+     */
+    static createFrom($$source: any = {}): Block {
+        const $$createField2_0 = $$createType1;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("card" in $$parsedSource) {
+            $$parsedSource["card"] = $$createField2_0($$parsedSource["card"]);
+        }
+        return new Block($$parsedSource as Partial<Block>);
+    }
+}
+
+/**
+ * Card is one status card embedded in a note document. Content, metadata and
+ * ordering all come from the inline fence in the note body — there is no second
+ * copy anywhere, so a card can never drift out of sync with itself.
+ */
+export class Card {
+    "id": string;
+    "created": time$0.Time;
+    "updated": time$0.Time;
+    "author"?: string;
+
+    /**
+     * Links are the IDs of other cards this card references. Rendering these as a
+     * graph is a later piece; here we only persist the edges.
+     */
+    "links"?: string[];
+
+    /**
+     * Body is the card's content (status text and/or code), preserved byte-for-byte
+     * between the fence lines except for outer blank lines (the fence delimiters
+     * own those). It may span multiple lines but must not contain a line equal to
+     * the bare close fence (enforced on write).
+     */
+    "body": string;
+
+    /** Creates a new Card instance. */
+    constructor($$source: Partial<Card> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("created" in $$source)) {
+            this["created"] = null;
+        }
+        if (!("updated" in $$source)) {
+            this["updated"] = null;
+        }
+        if (!("body" in $$source)) {
+            this["body"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new Card instance from a string or object.
+     */
+    static createFrom($$source: any = {}): Card {
+        const $$createField4_0 = $$createType2;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("links" in $$parsedSource) {
+            $$parsedSource["links"] = $$createField4_0($$parsedSource["links"]);
+        }
+        return new Card($$parsedSource as Partial<Card>);
+    }
+}
+
+/**
+ * DirEntry is one item in the cmdline file finder.
+ */
+export class DirEntry {
+    "name": string;
+    "isDir": boolean;
+
+    /** Creates a new DirEntry instance. */
+    constructor($$source: Partial<DirEntry> = {}) {
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("isDir" in $$source)) {
+            this["isDir"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new DirEntry instance from a string or object.
+     */
+    static createFrom($$source: any = {}): DirEntry {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new DirEntry($$parsedSource as Partial<DirEntry>);
+    }
+}
+
+/**
+ * Document is the note plus its parsed, ordered blocks (prose + cards). Blocks
+ * is a disposable projection of Note.Body; the .md file remains source of truth.
+ */
+export class Document {
+    "note": Note;
+    "blocks": Block[];
+
+    /** Creates a new Document instance. */
+    constructor($$source: Partial<Document> = {}) {
+        if (!("note" in $$source)) {
+            this["note"] = (new Note());
+        }
+        if (!("blocks" in $$source)) {
+            this["blocks"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new Document instance from a string or object.
+     */
+    static createFrom($$source: any = {}): Document {
+        const $$createField0_0 = $$createType3;
+        const $$createField1_0 = $$createType5;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("note" in $$parsedSource) {
+            $$parsedSource["note"] = $$createField0_0($$parsedSource["note"]);
+        }
+        if ("blocks" in $$parsedSource) {
+            $$parsedSource["blocks"] = $$createField1_0($$parsedSource["blocks"]);
+        }
+        return new Document($$parsedSource as Partial<Document>);
+    }
+}
+
+/**
+ * JournalEvent is one immutable line in the timeline log.
+ */
+export class JournalEvent {
+    "ts": time$0.Time;
+    "type": string;
+    "noteID": string;
+    "cardID": string;
+
+    /**
+     * To is the target card for a link event; empty otherwise.
+     */
+    "to"?: string;
+
+    /**
+     * Author is who triggered the event, for attribution in the timeline.
+     */
+    "author"?: string;
+
+    /** Creates a new JournalEvent instance. */
+    constructor($$source: Partial<JournalEvent> = {}) {
+        if (!("ts" in $$source)) {
+            this["ts"] = null;
+        }
+        if (!("type" in $$source)) {
+            this["type"] = "";
+        }
+        if (!("noteID" in $$source)) {
+            this["noteID"] = "";
+        }
+        if (!("cardID" in $$source)) {
+            this["cardID"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new JournalEvent instance from a string or object.
+     */
+    static createFrom($$source: any = {}): JournalEvent {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new JournalEvent($$parsedSource as Partial<JournalEvent>);
+    }
+}
+
+/**
  * NewNote is the structured input for CreateNoteFull — the result of the
  * frontend parsing a `:*` statement. Status/priority arrive already normalized
  * to their canonical forms; the backend re-validates as a safety net and fills
@@ -97,9 +308,9 @@ export class NewNote {
      * Creates a new NewNote instance from a string or object.
      */
     static createFrom($$source: any = {}): NewNote {
-        const $$createField2_0 = $$createType0;
-        const $$createField5_0 = $$createType0;
-        const $$createField6_0 = $$createType2;
+        const $$createField2_0 = $$createType2;
+        const $$createField5_0 = $$createType2;
+        const $$createField6_0 = $$createType7;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("tags" in $$parsedSource) {
             $$parsedSource["tags"] = $$createField2_0($$parsedSource["tags"]);
@@ -197,9 +408,9 @@ export class Note {
      * Creates a new Note instance from a string or object.
      */
     static createFrom($$source: any = {}): Note {
-        const $$createField4_0 = $$createType0;
-        const $$createField8_0 = $$createType0;
-        const $$createField9_0 = $$createType2;
+        const $$createField4_0 = $$createType2;
+        const $$createField8_0 = $$createType2;
+        const $$createField9_0 = $$createType7;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("tags" in $$parsedSource) {
             $$parsedSource["tags"] = $$createField4_0($$parsedSource["tags"]);
@@ -215,6 +426,11 @@ export class Note {
 }
 
 // Private type creation functions
-const $$createType0 = $Create.Array($Create.Any);
-const $$createType1 = Anchor.createFrom;
-const $$createType2 = $Create.Array($$createType1);
+const $$createType0 = Card.createFrom;
+const $$createType1 = $Create.Nullable($$createType0);
+const $$createType2 = $Create.Array($Create.Any);
+const $$createType3 = Note.createFrom;
+const $$createType4 = Block.createFrom;
+const $$createType5 = $Create.Array($$createType4);
+const $$createType6 = Anchor.createFrom;
+const $$createType7 = $Create.Array($$createType6);

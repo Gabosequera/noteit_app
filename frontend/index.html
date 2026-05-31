@@ -36,15 +36,19 @@
         <main class="detail" id="detail">
             <div class="detail-scroll" id="detailScroll"><!-- active note rendered in main.ts --></div>
 
+            <!-- Thin nvim/vscode-style statusline. The mode segment is always
+                 shown; `stMsg` is the showcmd area (pending leader keys +
+                 transient notices). The composer field stays hidden until you
+                 actually enter COMPOSE scope, so there's no persistent input. -->
             <div class="cmdbar" id="cmdbar">
-                <span class="mode" id="mode">-- INSERT --</span>
-                <span class="cmd-prompt">:</span>
-                <div class="cmd-field">
-                    <input class="cmd-input" id="cmdInput" placeholder="Enter command..." spellcheck="false" autocomplete="off"/>
+                <span class="mode" id="mode">-- DOC --</span>
+                <span class="st-msg" id="stMsg"></span>
+                <div class="cmd-field" id="cmdField" hidden>
+                    <span class="cmd-prompt">›</span>
+                    <input class="cmd-input" id="cmdInput" spellcheck="false" autocomplete="off"/>
                     <span class="bar-caret" id="barCaret"></span>
                     <span class="bar-mirror" id="barMirror" aria-hidden="true"></span>
                 </div>
-                <span class="cmd-k"><kbd>⌘K</kbd></span>
             </div>
         </main>
 
