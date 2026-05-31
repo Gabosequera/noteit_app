@@ -59,18 +59,14 @@ func main() {
 		// Start maximised so the app fills the screen edge-to-edge (no "app inside
 		// an app" floating look) while keeping the native window controls.
 		StartState: application.WindowStateMaximised,
-		// Real window transparency: the desktop shows through the liquid glass.
-		// The frontend paints an opaque diffuse background when the user turns the
-		// glass off (settings ⚙) to save compositing work.
-		BackgroundType:   application.BackgroundTypeTransparent,
-		BackgroundColour: application.NewRGBA(15, 23, 34, 0),
+		// Opaque window: the liquid-glass / frost is painted inside the webview, so
+		// the desktop never bleeds through (keeps text readable) and KDE doesn't draw
+		// the ugly translucent borders that a transparent window produces.
+		BackgroundColour: application.NewRGB(15, 23, 34),
 		Mac: application.MacWindow{
 			InvisibleTitleBarHeight: 50,
 			Backdrop:                application.MacBackdropTranslucent,
 			TitleBar:                application.MacTitleBarHiddenInset,
-		},
-		Linux: application.LinuxWindow{
-			WindowIsTranslucent: true,
 		},
 		URL: "/",
 	})

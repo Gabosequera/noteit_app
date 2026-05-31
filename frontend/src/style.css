@@ -82,12 +82,17 @@
 html, body { height: 100%; }
 body { margin: 0; min-height: 100%; }
 
-/* ░░░ APP — transparent by default so the real desktop shows through the glass.
-   In `solid` mode it paints a diffuse gray instead (cheaper, no see-through). ░░░ */
+/* ░░░ APP — a soft, diffuse frost gradient painted INSIDE the webview (opaque, so
+   text stays readable and the desktop never bleeds through). In `solid` mode it
+   becomes a plain diffuse gray to save resources. ░░░ */
 .app {
     height: 100%;
     overflow: hidden;
-    background: transparent;
+    background:
+        radial-gradient(85% 70% at 6% -4%, #eaa066 0%, transparent 55%),
+        radial-gradient(80% 78% at 98% 10%, #d96f8d 0%, transparent 55%),
+        radial-gradient(120% 120% at 62% 112%, #5750b8 0%, transparent 60%),
+        linear-gradient(155deg, #cf8455 0%, #bd5a72 40%, #6a59b4 76%, #34335f 100%);
 }
 :root.solid .app {
     background:
@@ -111,17 +116,17 @@ body { margin: 0; min-height: 100%; }
     flex-direction: column;
     min-height: 0;
     padding: 16px 10px 10px;
-    background: var(--glass);
-    backdrop-filter: blur(34px) saturate(165%);
-    -webkit-backdrop-filter: blur(34px) saturate(165%);
+    /* Frosted glass faked with a translucent tint over the app gradient: reads as
+       liquid glass, stays readable, and avoids the WebKitGTK backdrop-filter ghost
+       bug (no expensive blur pass). */
+    background: linear-gradient(180deg, rgba(26, 29, 42, 0.46), rgba(15, 17, 27, 0.66));
     border-right: 1px solid var(--glass-line);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
     color: var(--glass-fg);
 }
-/* solid (perf) mode: opaque diffuse gray, no expensive backdrop blur */
+/* solid (perf) mode: opaque diffuse gray */
 :root.solid .sidebar {
-    background: rgba(46, 50, 60, 0.96);
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
+    background: rgba(46, 50, 60, 0.97);
 }
 
 /* folder header (devlog ▾  +) */
