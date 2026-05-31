@@ -251,6 +251,45 @@ func (s *NoteService) GetNote(id string) (Note, error) {
 	return parseNote(raw)
 }
 
+// SaveBody overwrites a note's entire Markdown body with `body` and rewrites it
+// to disk, bumping Updated. This is the Obsidian-style raw-text save path: the
+// editor owns the whole document (prose AND inline card fences) as plain text,
+// so there is no block diffing and no journaling here — it simply replaces the
+// "present" body. The note's frontmatter (title, tags, status, anchors, …) is
+// preserved by re-rendering the parsed note with only Body/Updated changed. The
+// id is validated and the write is atomic.
+func (s *NoteService) SaveBody(noteID, body string) (Note, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.rootErr != nil {
+		return Note{}, s.rootErr
+	}
+	if _, err := uuid.Parse(noteID); err != nil {
+		return Note{}, fmt.Errorf("invalid id: %w", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(s.notesDir(), noteID+".md"))
+	if err != nil {
+		return Note{}, fmt.Errorf("read note: %w", err)
+	}
+	n, err := parseNote(raw)
+	if err != nil {
+		return Note{}, err
+	}
+
+	n.Body = body
+	n.Updated = time.Now().UTC()
+
+	data, err := n.render()
+	if err != nil {
+		return Note{}, fmt.Errorf("render note: %w", err)
+	}
+	if err := s.writeAtomic(n.ID, data); err != nil {
+		return Note{}, err
+	}
+	return n, nil
+}
+
 // AddAnchor attaches a code reference (file + line range) to an existing note and
 // rewrites it to disk. This is the "Level A" pin: we also stamp the project's
 // current git commit so the anchor records the exact state it pointed at. The

@@ -240,6 +240,17 @@ body { margin: 0; min-height: 100%; }
 .detail-scroll::-webkit-scrollbar { width: 9px; }
 .detail-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 5px; }
 
+/* Editor layout: when the CodeMirror surface is mounted, the detail pane becomes
+   a flex column — a fixed header on top and the editor filling the rest. The
+   editor (not the pane) owns vertical scrolling, so long documents stay smooth
+   via CodeMirror's viewport virtualization instead of a giant rebuilt DOM. */
+.detail-scroll.has-editor { display: flex; flex-direction: column; overflow: hidden; padding: 0; }
+.detail-head { flex: none; padding: 26px 38px 10px; }
+.editor-host { flex: 1; min-height: 0; position: relative; }
+.editor-host .cm-editor { height: 100%; }
+.editor-host .cm-scroller { padding: 4px 38px 0; }
+.detail-scroll.has-editor .detail-empty { flex: 1; }
+
 .detail-empty { height: 100%; display: grid; place-items: center; color: var(--fg-mute); text-align: center; }
 
 /* note header inside detail */
