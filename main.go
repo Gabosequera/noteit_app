@@ -56,13 +56,23 @@ func main() {
 	// 'URL' is the URL that will be loaded into the webview.
 	app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title: "noteit",
+		// Start maximised so the app fills the screen edge-to-edge (no "app inside
+		// an app" floating look) while keeping the native window controls.
+		StartState: application.WindowStateMaximised,
+		// Real window transparency: the desktop shows through the liquid glass.
+		// The frontend paints an opaque diffuse background when the user turns the
+		// glass off (settings ⚙) to save compositing work.
+		BackgroundType:   application.BackgroundTypeTransparent,
+		BackgroundColour: application.NewRGBA(15, 23, 34, 0),
 		Mac: application.MacWindow{
 			InvisibleTitleBarHeight: 50,
 			Backdrop:                application.MacBackdropTranslucent,
 			TitleBar:                application.MacTitleBarHiddenInset,
 		},
-		BackgroundColour: application.NewRGB(11, 14, 20),
-		URL:              "/",
+		Linux: application.LinuxWindow{
+			WindowIsTranslucent: true,
+		},
+		URL: "/",
 	})
 
 	// Create a goroutine that emits an event containing the current time every second.

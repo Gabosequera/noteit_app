@@ -379,7 +379,7 @@ document.querySelectorAll<HTMLElement>(".tool").forEach((el) => {
         document.querySelectorAll(".tool").forEach((t) => t.classList.remove("is-active"));
         if (tool === "tree" || tool === "tags") { el.classList.add("is-active"); setView("tree"); }
         else if (tool === "search") { cmdline.show(); }
-        else if (tool === "settings") { toggleTheme(); }
+        else if (tool === "settings") { toggleGlass(); }
     });
 });
 
@@ -397,6 +397,21 @@ function toggleTheme() {
     document.documentElement.classList.toggle("light", light);
     notify(`theme: ${light ? "light" : "dark"}`);
 }
+
+/* ───────────────────────── Liquid glass toggle (⚙) ─────────────────────────
+   Default ON: real window transparency + backdrop blur. Turning it OFF paints
+   an opaque diffuse gray and drops the blur, saving compositing work. Persisted. */
+let glass = localStorage.getItem("noteit.glass") !== "off"; // default ON
+function applyGlass() {
+    document.documentElement.classList.toggle("solid", !glass);
+}
+function toggleGlass() {
+    glass = !glass;
+    localStorage.setItem("noteit.glass", glass ? "on" : "off");
+    applyGlass();
+    notify(glass ? "✨ liquid glass: on" : "▢ modo sólido (ahorro de recursos)");
+}
+applyGlass();
 
 /* ───────────────────────── Filesystem (necesita backend Go) ───────────────── */
 function runFs(op: "cd" | "e", path: string) {
@@ -424,7 +439,9 @@ const cmdline = new Cmdline({
     runFs,
     reloadNotes: () => { void loadNotes(); },
     addAnchor: (file, lines) => { void addAnchorToActive(file, lines); },
-    createNoteFull: (st) => { void createNoteFromStatement(st); }
+    createNoteFull: (st) => { void createNoteFromStatement(st); },
+    listDir: (input) => NoteService.ListDir(input)
+        .then((es) => es.map((e) => ({ name: e.name, isDir: e.isDir })))
 });
 
 /* ───────────────────────── Modes: INSERT / NORMAL ───────────────────────── */
