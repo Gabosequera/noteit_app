@@ -83,15 +83,42 @@
     <div class="cmdbar" id="cmdbar">
         <span class="mode" id="mode">-- INSERT --</span>
         <span class="cmd-prompt">:</span>
-        <input class="cmd-input" id="cmdInput" placeholder="Write a note or command..." spellcheck="false" autocomplete="off"/>
+        <div class="cmd-field">
+            <input class="cmd-input" id="cmdInput" placeholder="Write a note or command..." spellcheck="false" autocomplete="off"/>
+            <span class="bar-caret" id="barCaret"></span>
+            <span class="bar-mirror" id="barMirror" aria-hidden="true"></span>
+        </div>
         <div class="hints">
+            <span><kbd>:</kbd> command</span>
+            <span class="sep"></span>
             <span><kbd>esc</kbd> normal</span>
             <span class="sep"></span>
-            <span><kbd>⌘K</kbd> commands</span>
-            <span class="sep"></span>
-            <span><kbd>⌘/</kbd> help</span>
+            <span><kbd>tab</kbd> complete</span>
         </div>
     </div>
+
+    <!-- ░░░ TOP CMDLINE POPUP (nvim/noice style) ░░░ -->
+    <div class="cmdline-overlay" id="cmdlineOverlay" hidden>
+        <div class="cmdline">
+            <div class="cmdline-frame">
+                <span class="cl-legend">Cmdline</span>
+                <div class="cmdline-row">
+                    <span class="cl-prompt">:</span>
+                    <span class="cl-text" id="clText"></span><span class="cl-cursor"></span>
+                </div>
+            </div>
+            <ul class="cmdline-suggest" id="clSuggest"></ul>
+            <div class="cmdline-foot">
+                <span><kbd>tab</kbd> complete</span>
+                <span><kbd>↑↓</kbd> select / history</span>
+                <span><kbd>⏎</kbd> run</span>
+                <span><kbd>esc</kbd> close</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- ░░░ TOAST ░░░ -->
+    <div class="toast" id="toast" hidden></div>
 
 </div>
 <script type="module" src="/src/main.ts"></script>

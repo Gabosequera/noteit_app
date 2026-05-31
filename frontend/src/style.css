@@ -43,6 +43,20 @@
     -webkit-user-select: none;
 }
 
+:root.light {
+    --bg: #f3f1ea;
+    --bg-side: #eceae1;
+    --bg-panel: #e7e4da;
+    --bg-card: #fbfaf6;
+    --bg-card-hi: #ffffff;
+    --border: #d9d5c8;
+    --border-soft: #e0ddd2;
+    --fg: #2a2d34;
+    --fg-dim: #6b6f78;
+    --fg-mute: #9aa0a6;
+    color-scheme: light;
+}
+
 @font-face {
     font-family: "Inter";
     font-style: normal;
@@ -223,6 +237,25 @@ body { margin: 0; min-height: 100%; background: var(--bg); }
 }
 .cmd-input::placeholder { color: var(--fg-mute); }
 
+/* bottom-bar block cursor (nvim NORMAL mode) */
+.cmd-field { position: relative; flex: 1; display: flex; align-items: center; }
+.bar-mirror {
+    position: absolute; left: 0; top: 0;
+    visibility: hidden; white-space: pre; pointer-events: none;
+    font-family: var(--font-mono); font-size: 0.95rem;
+}
+.bar-caret {
+    position: absolute; top: 50%; transform: translateY(-50%);
+    width: 0.62em; height: 1.15em;
+    background: var(--accent); opacity: 0; pointer-events: none;
+    border-radius: 1px;
+    transition: left 0.04s linear;
+    mix-blend-mode: difference;
+}
+.cmdbar.normal .bar-caret { opacity: 0.9; animation: blockblink 1.05s steps(1) infinite; }
+.cmdbar.normal .cmd-input { caret-color: transparent; color: var(--fg); }
+@keyframes blockblink { 50% { opacity: 0.25; } }
+
 .hints { display: flex; align-items: center; gap: 0.7rem; font-family: var(--font-ui); font-size: 0.78rem; color: var(--fg-mute); flex: none; }
 .hints .sep { width: 1px; height: 14px; background: var(--border); }
 kbd {
@@ -235,3 +268,96 @@ kbd {
     padding: 0.1rem 0.35rem;
     margin-right: 0.3rem;
 }
+
+/* ════════════════ TOP CMDLINE POPUP (nvim/noice) ════════════════ */
+.cmdline-overlay {
+    position: fixed; inset: 0;
+    display: flex; justify-content: center; align-items: flex-start;
+    padding-top: 6vh;
+    background: rgba(5, 7, 11, 0.45);
+    backdrop-filter: blur(2px);
+    z-index: 50;
+    opacity: 0;
+    transition: opacity 0.12s ease;
+}
+.cmdline-overlay.visible { opacity: 1; }
+
+.cmdline {
+    width: min(720px, 86%);
+    display: flex; flex-direction: column;
+    transform: translateY(-8px);
+    transition: transform 0.14s cubic-bezier(.2,.9,.3,1);
+}
+.cmdline-overlay.visible .cmdline { transform: translateY(0); }
+
+.cmdline-frame {
+    position: relative;
+    border: 1px solid var(--accent-2);
+    border-radius: var(--radius);
+    background: linear-gradient(180deg, #131a26, #0e131d);
+    padding: 0.95rem 1.1rem;
+    box-shadow: 0 24px 70px -20px rgba(0,0,0,0.7), 0 0 0 1px rgba(88,166,255,0.06),
+                0 0 24px -6px rgba(88,166,255,0.25);
+}
+.cl-legend {
+    position: absolute; top: -0.72rem; left: 1.1rem;
+    font-size: 0.78rem; font-weight: 600; letter-spacing: 0.04em;
+    color: var(--accent-2);
+    background: #0f1420; padding: 0 0.5rem;
+}
+.cmdline-row { display: flex; align-items: center; gap: 0.55rem; font-size: 1.05rem; }
+.cmdline-row .cl-prompt { color: var(--accent-2); font-weight: 700; }
+.cl-text { color: var(--fg); white-space: pre; }
+.cl-cursor {
+    display: inline-block; width: 0.6em; height: 1.2em;
+    background: var(--accent-2); margin-left: 1px;
+    vertical-align: text-bottom; border-radius: 1px;
+    animation: blockblink 1.05s steps(1) infinite;
+}
+
+.cmdline-suggest {
+    list-style: none; margin: 0.5rem 0 0; padding: 0.35rem;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--bg-panel);
+    max-height: 300px; overflow-y: auto;
+    box-shadow: 0 18px 50px -22px rgba(0,0,0,0.7);
+}
+.cl-item {
+    display: grid; grid-template-columns: 150px 52px 1fr auto;
+    align-items: center; gap: 0.6rem;
+    padding: 0.4rem 0.6rem; border-radius: var(--radius-sm);
+    cursor: pointer;
+}
+.cl-item.sel { background: var(--bg-card-hi); }
+.cl-item.sel .cl-name { color: var(--accent); }
+.cl-name { color: var(--fg); font-weight: 600; }
+.cl-grp {
+    font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.06em;
+    text-align: center; padding: 0.1rem 0; border-radius: 4px;
+    color: var(--bg); font-family: var(--font-ui); font-weight: 700;
+}
+.cl-grp-view { background: var(--accent-2); }
+.cl-grp-note { background: var(--accent); }
+.cl-grp-tag  { background: #db61a2; }
+.cl-grp-app  { background: var(--warn); }
+.cl-grp-fs   { background: #a371f7; }
+.cl-hint-txt { color: var(--fg-dim); font-size: 0.85rem; }
+.cl-freq { color: var(--fg-mute); font-size: 0.78rem; }
+.cl-empty { padding: 0.5rem 0.6rem; color: var(--fg-mute); }
+
+.cmdline-foot {
+    display: flex; gap: 1.1rem; padding: 0.55rem 0.3rem 0;
+    font-family: var(--font-ui); font-size: 0.74rem; color: var(--fg-mute);
+}
+
+/* ════════════════ TOAST ════════════════ */
+.toast {
+    position: fixed; left: 50%; bottom: 4.5rem; transform: translateX(-50%) translateY(8px);
+    background: var(--bg-card-hi); border: 1px solid var(--border);
+    color: var(--fg); padding: 0.55rem 0.95rem; border-radius: var(--radius-sm);
+    font-size: 0.85rem; z-index: 60;
+    box-shadow: 0 14px 40px -16px rgba(0,0,0,0.7);
+    opacity: 0; transition: opacity 0.15s ease, transform 0.15s ease;
+    max-width: 70%;
+}
+.toast.visible { opacity: 1; transform: translateX(-50%) translateY(0); }

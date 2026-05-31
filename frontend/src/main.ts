@@ -1,27 +1,16 @@
 import "./style.css";
+import { Cmdline } from "./cmdline.js";
 
 console.log("%cnoteit", "color:#5ef3a8;font-weight:700;font-size:16px");
 console.log("frontend booted — wails v3 + vanilla ts (sketch shell)");
 
-/* ───────────────────────── Note deck (sketch data) ─────────────────────────
-   "Ese sistema": las notas son fichas apiladas. La activa se expande, el
-   resto quedan colapsadas en el stack. Se navega con j/k o ↑/↓, igual que el
-   journal de las ruedas. Datos dummy solo para sketchear el look. */
-
-interface Note {
-    when: string;
-    who: string;
-    title: string;
-    color: string;
-    bodyHtml?: string; // contenido enriquecido opcional (código, etc.)
-}
+/* ───────────────────────── Note deck (sketch data) ───────────────────────── */
+interface Note { when: string; who: string; title: string; color: string; bodyHtml?: string; }
 
 const NOTES: Note[] = [
     {
-        when: "2025-05-20  14:37",
-        who: "alex@local",
-        title: "Refactor: Async Resource Pool",
-        color: "#e3b341",
+        when: "2025-05-20  14:37", who: "alex@local",
+        title: "Refactor: Async Resource Pool", color: "#e3b341",
         bodyHtml: `<pre class="code"><code><span class="k">class</span> <span class="t">Pool</span>&lt;T&gt; {
   <span class="k">private</span> idle: T[] = []
   <span class="k">private</span> busy = <span class="k">new</span> <span class="t">Set</span>&lt;T&gt;()
@@ -51,32 +40,27 @@ const deck = document.getElementById("deck")!;
 const cmdbar = document.getElementById("cmdbar")!;
 const cmdInput = document.getElementById("cmdInput") as HTMLInputElement;
 const modeEl = document.getElementById("mode")!;
+const barCaret = document.getElementById("barCaret")!;
+const barMirror = document.getElementById("barMirror")!;
+const toastEl = document.getElementById("toast")!;
 
 let active = 0;
 
-function esc(s: string): string {
-    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
+const escHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-function expandedCard(n: Note): string {
-    return `
-        <div class="card-meta">
+function expandedCard(n: Note) {
+    return `<div class="card-meta">
             <span class="when"><span class="status" style="--c:${n.color}"></span>${n.when}</span>
-            <span class="who">${esc(n.who)}</span>
+            <span class="who">${escHtml(n.who)}</span>
         </div>
-        <h2 class="card-title">${esc(n.title)}</h2>
-        ${n.bodyHtml ?? `<p class="card-body">${esc(n.title)} — nota vacía (sketch).</p>`}
-    `;
+        <h2 class="card-title">${escHtml(n.title)}</h2>
+        ${n.bodyHtml ?? `<p class="card-body">${escHtml(n.title)} — nota vacía (sketch).</p>`}`;
 }
-
-function collapsedCard(n: Note): string {
-    return `
-        <span class="row-when"><span class="status" style="--c:${n.color}"></span>${n.when}</span>
-        <span class="row-title">${esc(n.title)}</span>
-        <span class="row-who">${esc(n.who)}</span>
-    `;
+function collapsedCard(n: Note) {
+    return `<span class="row-when"><span class="status" style="--c:${n.color}"></span>${n.when}</span>
+        <span class="row-title">${escHtml(n.title)}</span>
+        <span class="row-who">${escHtml(n.who)}</span>`;
 }
-
 function render() {
     deck.innerHTML = "";
     NOTES.forEach((n, i) => {
@@ -88,11 +72,81 @@ function render() {
     });
     deck.children[active]?.scrollIntoView({ block: "nearest", behavior: "smooth" });
 }
+function move(delta: number) { active = (active + delta + NOTES.length) % NOTES.length; render(); }
 
-function move(delta: number) {
-    active = (active + delta + NOTES.length) % NOTES.length;
-    render();
+/* ───────────────────────── Toast ───────────────────────── */
+let toastTimer: number | undefined;
+function notify(msg: string) {
+    toastEl.textContent = msg;
+    toastEl.hidden = false;
+    requestAnimationFrame(() => toastEl.classList.add("visible"));
+    clearTimeout(toastTimer);
+    toastTimer = window.setTimeout(() => {
+        toastEl.classList.remove("visible");
+        window.setTimeout(() => (toastEl.hidden = true), 200);
+    }, 2600);
 }
+
+/* ───────────────────────── Block cursor (bottom bar) ───────────────────────── */
+function updateBarCaret() {
+    // mide el ancho del texto actual con un mirror y posiciona el bloque
+    barMirror.textContent = cmdInput.value || "";
+    const w = barMirror.getBoundingClientRect().width;
+    barCaret.style.left = `${w}px`;
+}
+
+/* ───────────────────────── Sidebar / views ───────────────────────── */
+function setView(view: string) {
+    if (view === "__insert__") { setMode("insert"); notify("✎ new note"); return; }
+    document.querySelectorAll<HTMLElement>(".nav-item").forEach((el) => {
+        el.classList.toggle("is-active", el.dataset.view === view);
+    });
+    notify(`→ ${view}`);
+}
+document.querySelectorAll<HTMLElement>(".nav-item").forEach((el) => {
+    el.addEventListener("click", () => el.dataset.view && setView(el.dataset.view));
+});
+
+function filterTag(tag: string) {
+    const exists = Array.from(document.querySelectorAll(".tag-item .lbl")).some(
+        (e) => e.textContent === tag
+    );
+    notify(exists ? `# filtrando por tag: ${tag}` : `# tag "${tag}" no existe`);
+}
+
+/* ───────────────────────── Theme ───────────────────────── */
+let light = false;
+function toggleTheme() {
+    light = !light;
+    document.documentElement.classList.toggle("light", light);
+    notify(`theme: ${light ? "light" : "dark"}`);
+}
+
+/* ───────────────────────── Filesystem (necesita backend Go) ───────────────── */
+function runFs(op: "cd" | "e", path: string) {
+    const inWails = typeof (window as unknown as { _wails?: unknown })._wails !== "undefined";
+    if (!inWails) {
+        notify(`:${op} ${path || "…"} — navegación de archivos: pendiente de binding Go`);
+        return;
+    }
+    // TODO: invocar GreetService/FsService.List(path) cuando exista la binding.
+    notify(`:${op} ${path} — binding Go pendiente`);
+}
+
+/* ───────────────────────── Cmdline ───────────────────────── */
+const cmdline = new Cmdline({
+    setView,
+    jumpToNote: (n1) => {
+        const idx = Math.min(Math.max(n1, 1), NOTES.length) - 1;
+        active = idx; render(); notify(`↪ note ${idx + 1}`);
+    },
+    noteCount: () => NOTES.length,
+    filterTag,
+    listTags: () => Array.from(document.querySelectorAll(".tag-item .lbl")).map((e) => e.textContent ?? ""),
+    toggleTheme,
+    notify,
+    runFs
+});
 
 /* ───────────────────────── Modes: INSERT / NORMAL ───────────────────────── */
 type Mode = "insert" | "normal";
@@ -102,24 +156,35 @@ function setMode(next: Mode) {
     mode = next;
     cmdbar.classList.toggle("normal", mode === "normal");
     modeEl.textContent = mode === "insert" ? "-- INSERT --" : "-- NORMAL --";
+    cmdInput.readOnly = mode === "normal";
     if (mode === "insert") cmdInput.focus();
-    else cmdInput.blur();
+    else { cmdInput.blur(); updateBarCaret(); }
 }
 
+cmdInput.addEventListener("input", updateBarCaret);
+
 window.addEventListener("keydown", (ev) => {
+    if (cmdline.isOpen()) return; // la cmdline consume sus propias teclas
+
+    // `:` abre la cmdline desde NORMAL (en INSERT es texto literal)
+    if (ev.key === ":" && mode === "normal") { ev.preventDefault(); cmdline.show(); return; }
+
     if (ev.key === "Escape") { setMode("normal"); return; }
 
     if (mode === "normal") {
         if (ev.key === "j" || ev.key === "ArrowDown") { move(1); ev.preventDefault(); }
         else if (ev.key === "k" || ev.key === "ArrowUp") { move(-1); ev.preventDefault(); }
         else if (ev.key === "i" || ev.key === "a") { setMode("insert"); ev.preventDefault(); }
+        else if (ev.key === "g") { active = 0; render(); ev.preventDefault(); }
+        else if (ev.key === "G") { active = NOTES.length - 1; render(); ev.preventDefault(); }
         return;
     }
 
-    // En INSERT: ↑/↓ siguen navegando el deck aunque estés escribiendo
+    // INSERT: ↑/↓ siguen navegando el deck
     if (ev.key === "ArrowDown") { move(1); ev.preventDefault(); }
     else if (ev.key === "ArrowUp") { move(-1); ev.preventDefault(); }
 });
 
 render();
 setMode("insert");
+updateBarCaret();
