@@ -48,6 +48,60 @@ func (s *NoteService) GetDocument(id string) (Document, error) {
 	return Document{Note: n, Blocks: parseBlocks(n.Body)}, nil
 }
 
+// SaveDocument persists an edited block list as the note's new body WITHOUT
+// touching the timeline. This is the prose-save path: the Outline-style free-text
+// editor hands back the whole ordered block list after the user edits prose, and
+// we rewrite the .md file to match. Editing prose is not a card lifecycle event,
+// so — unlike AddCard/UpdateCard/DeleteCard/LinkCards — SaveDocument is
+// intentionally history-free and appends NO journal event. Card create/update/
+// delete/link still go exclusively through the journaled methods above; this one
+// only moves the "present" forward, never the history.
+//
+// Card rendering reuses saveBlocksLocked → renderBlocks → renderCard, which
+// already guards card BODIES against a bare close fence. Prose blocks bypass that
+// guard (renderBlocks emits text verbatim), so a bare `:::` typed into prose would
+// otherwise persist and be re-parsed as a stray close fence, corrupting the
+// document on the next read. We therefore reject any prose block containing a lone
+// `:::` here and surface it to the caller rather than silently corrupting the file.
+//
+// We return the Document RE-PARSED from the saved canonical body rather than
+// echoing the input blocks: renderBlocks normalizes spacing and merges/drops
+// blocks (e.g. two adjacent prose blocks collapse into one), so re-parsing
+// guarantees the caller sees exactly what landed on disk — the canonical form a
+// subsequent GetDocument would return — with no drift between the in-memory reply
+// and the persisted file.
+func (s *NoteService) SaveDocument(noteID string, blocks []Block) (Document, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	n, err := s.readNoteLocked(noteID)
+	if err != nil {
+		return Document{}, err
+	}
+
+	// renderBlocks only fence-checks card bodies; guard prose blocks too.
+	for _, b := range blocks {
+		if b.Kind != "card" && hasLoneFence(b.Text) {
+			return Document{}, errCardFenceInBody
+		}
+	}
+
+	// Cards are journaled state: they may only change through the card methods.
+	// Reject any prose-save whose card set differs (count, order, or content)
+	// from what is on disk, so a client cannot mutate cards without a timeline
+	// event by smuggling changes through the prose path.
+	if !cardsUnchanged(parseBlocks(n.Body), blocks) {
+		return Document{}, errCardMutationInProseSave
+	}
+
+	if err := s.saveBlocksLocked(&n, blocks, time.Now().UTC()); err != nil {
+		return Document{}, err
+	}
+	// Re-parse the canonical body so callers get the normalized blocks, not the
+	// raw input. No journal event: prose edits are not card lifecycle history.
+	return Document{Note: n, Blocks: parseBlocks(n.Body)}, nil
+}
+
 // AddCard appends a new status card to the end of a note document and records a
 // card.created event. The card id is a server-generated UUIDv7; created/updated
 // are stamped now (UTC). Returns the updated Document.
@@ -243,6 +297,48 @@ func (s *NoteService) Timeline() ([]JournalEvent, error) {
 }
 
 // ───────────────────────────── internal helpers ─────────────────────────────
+
+// cardsUnchanged reports whether the cards in `next` (a client-supplied block
+// list) are identical, in order and content, to the cards in `current` (the
+// blocks parsed from disk). Prose blocks are ignored — only the card projection
+// must match. Timestamps are compared with time.Equal so a JSON round-trip
+// (which can change the location pointer) doesn't read as a spurious mutation.
+func cardsUnchanged(current, next []Block) bool {
+	a := cardPtrsOf(current)
+	b := cardPtrsOf(next)
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		x, y := a[i], b[i]
+		if x.ID != y.ID || x.Author != y.Author || x.Body != y.Body {
+			return false
+		}
+		if !x.Created.Equal(y.Created) || !x.Updated.Equal(y.Updated) {
+			return false
+		}
+		if len(x.Links) != len(y.Links) {
+			return false
+		}
+		for j := range x.Links {
+			if x.Links[j] != y.Links[j] {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// cardPtrsOf returns the cards embedded in a block list, in order.
+func cardPtrsOf(blocks []Block) []*Card {
+	out := make([]*Card, 0, len(blocks))
+	for i := range blocks {
+		if blocks[i].Kind == "card" && blocks[i].Card != nil {
+			out = append(out, blocks[i].Card)
+		}
+	}
+	return out
+}
 
 // readNoteLocked reads+parses a note by id. Caller must hold s.mu.
 func (s *NoteService) readNoteLocked(id string) (Note, error) {

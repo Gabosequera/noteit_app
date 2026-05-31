@@ -235,6 +235,153 @@ func TestLinkCards(t *testing.T) {
 	}
 }
 
+func TestSaveDocumentRoundTripsAndPersists(t *testing.T) {
+	s := newTestService(t)
+	n, err := s.CreateNote("outline", "original prose")
+	if err != nil {
+		t.Fatalf("CreateNote: %v", err)
+	}
+
+	// A card may only enter the document through the journaled AddCard path; the
+	// prose-save path must PRESERVE it untouched while rewriting the prose around
+	// it. Seed the card, then re-read it from disk so we hold its canonical form.
+	if _, err := s.AddCard(n.ID, "a status card"); err != nil {
+		t.Fatalf("AddCard: %v", err)
+	}
+	seeded, err := s.GetDocument(n.ID)
+	if err != nil {
+		t.Fatalf("GetDocument: %v", err)
+	}
+	seededCards := cardsOf(seeded.Blocks)
+	if len(seededCards) != 1 {
+		t.Fatalf("expected 1 seeded card, got %d", len(seededCards))
+	}
+	c := seededCards[0]
+
+	// Prose surrounding the card stays as distinct blocks through the canonical
+	// round-trip (adjacent prose would merge; a card between them keeps them split).
+	blocks := []Block{
+		{Kind: "text", Text: "first edited paragraph"},
+		{Kind: "card", Card: &c},
+		{Kind: "text", Text: "second edited paragraph"},
+	}
+	doc, err := s.SaveDocument(n.ID, blocks)
+	if err != nil {
+		t.Fatalf("SaveDocument: %v", err)
+	}
+	want := []string{"first edited paragraph", "a status card", "second edited paragraph"}
+	if !blocksMatch(doc.Blocks, want) {
+		t.Fatalf("returned blocks not round-tripped: %+v", doc.Blocks)
+	}
+
+	// Survives a reload from disk via GetDocument (canonical body persisted).
+	reread, err := s.GetDocument(n.ID)
+	if err != nil {
+		t.Fatalf("GetDocument: %v", err)
+	}
+	if !blocksMatch(reread.Blocks, want) {
+		t.Fatalf("prose not persisted to disk: %+v", reread.Blocks)
+	}
+}
+
+// blocksMatch checks an ordered block list against expected text/card contents.
+func blocksMatch(blocks []Block, want []string) bool {
+	if len(blocks) != len(want) {
+		return false
+	}
+	for i, b := range blocks {
+		var got string
+		if b.Kind == "card" {
+			if b.Card == nil {
+				return false
+			}
+			got = b.Card.Body
+		} else {
+			got = b.Text
+		}
+		if got != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func TestSaveDocumentDoesNotJournal(t *testing.T) {
+	s := newTestService(t)
+	n, _ := s.CreateNote("x", "")
+	// Seed one journaled event so we can prove SaveDocument leaves the count alone.
+	if _, err := s.AddCard(n.ID, "a card"); err != nil {
+		t.Fatalf("AddCard: %v", err)
+	}
+	seeded, err := s.GetDocument(n.ID)
+	if err != nil {
+		t.Fatalf("GetDocument: %v", err)
+	}
+	c := cardsOf(seeded.Blocks)[0]
+
+	before, err := s.Timeline()
+	if err != nil {
+		t.Fatalf("Timeline: %v", err)
+	}
+	// Edit prose while preserving the existing card untouched.
+	if _, err := s.SaveDocument(n.ID, []Block{
+		{Kind: "text", Text: "edited prose"},
+		{Kind: "card", Card: &c},
+	}); err != nil {
+		t.Fatalf("SaveDocument: %v", err)
+	}
+	after, err := s.Timeline()
+	if err != nil {
+		t.Fatalf("Timeline: %v", err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("SaveDocument changed timeline length: %d -> %d", len(before), len(after))
+	}
+}
+
+// TestSaveDocumentRejectsCardMutation proves the prose-save path cannot be used
+// to change cards behind the journal's back: dropping, editing, or adding a card
+// via SaveDocument must be rejected. Cards only change through the journaled
+// card methods, keeping the timeline complete.
+func TestSaveDocumentRejectsCardMutation(t *testing.T) {
+	s := newTestService(t)
+	n, _ := s.CreateNote("x", "")
+	if _, err := s.AddCard(n.ID, "orig"); err != nil {
+		t.Fatalf("AddCard: %v", err)
+	}
+	seeded, err := s.GetDocument(n.ID)
+	if err != nil {
+		t.Fatalf("GetDocument: %v", err)
+	}
+	c := cardsOf(seeded.Blocks)[0]
+
+	// (1) Dropping the card via a prose save is rejected.
+	if _, err := s.SaveDocument(n.ID, []Block{{Kind: "text", Text: "no card"}}); err == nil {
+		t.Error("expected rejection when prose-save drops a card")
+	}
+	// (2) Editing a card body via a prose save is rejected.
+	edited := c
+	edited.Body = "tampered"
+	if _, err := s.SaveDocument(n.ID, []Block{{Kind: "card", Card: &edited}}); err == nil {
+		t.Error("expected rejection when prose-save edits a card body")
+	}
+	// (3) Adding a brand-new card via a prose save is rejected.
+	keep := c
+	extra := Card{ID: "01931b2c-0000-7000-8000-0000000000ff", Created: time.Now().UTC(), Body: "new"}
+	if _, err := s.SaveDocument(n.ID, []Block{{Kind: "card", Card: &keep}, {Kind: "card", Card: &extra}}); err == nil {
+		t.Error("expected rejection when prose-save adds a card")
+	}
+}
+
+func TestSaveDocumentRejectsLoneFenceInProse(t *testing.T) {
+	s := newTestService(t)
+	n, _ := s.CreateNote("x", "")
+	blocks := []Block{{Kind: "text", Text: "line1\n:::\nline2"}}
+	if _, err := s.SaveDocument(n.ID, blocks); err == nil {
+		t.Error("expected error for lone ::: in prose block")
+	}
+}
+
 func TestCardFenceInBodyRejected(t *testing.T) {
 	s := newTestService(t)
 	n, _ := s.CreateNote("x", "")

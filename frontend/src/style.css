@@ -271,36 +271,54 @@ body { margin: 0; min-height: 100%; }
 .md .task.done .box { background: var(--good); border-color: var(--good); color: #06281a; }
 .md .task.done { color: var(--fg-mute); text-decoration: line-through; }
 
-/* ════════════════ COMMAND BAR (inside the detail panel) ════════════════ */
+/* ════════════════ STATUSLINE (inside the detail panel) ════════════════
+   A thin nvim/vscode-style status bar: a small mode segment on the left, a
+   showcmd area for pending leader keys / transient notices, and a composer
+   field that only appears while in COMPOSE scope. No persistent input. */
 .cmdbar {
-    display: flex; align-items: center; gap: 12px;
-    padding: 12px 18px;
+    display: flex; align-items: center; gap: 10px;
+    padding: 3px 12px;
+    min-height: 24px;
     border-top: 1px solid var(--ink-line);
-    background: rgba(0, 0, 0, 0.22);
+    background: rgba(0, 0, 0, 0.30);
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
 }
 .mode {
-    font-weight: 700; font-size: 0.72rem; letter-spacing: 0.04em;
+    font-weight: 700; font-size: 0.64rem; letter-spacing: 0.07em;
     color: #16210f; background: var(--olive);
-    padding: 5px 10px; border-radius: 7px; flex: none;
+    padding: 2px 7px; border-radius: 4px; flex: none;
     transition: background 0.15s ease, color 0.15s ease;
 }
 .cmdbar.normal .mode { background: #21314a; color: var(--accent-2); }
-.cmd-prompt { color: var(--accent); font-weight: 700; }
 
-.cmd-field { position: relative; flex: 1; display: flex; align-items: center; }
+/* showcmd / message area. Default dim; highlighted while a leader key sequence
+   is pending (`st-msg-keys`) or flashing a transient notice (`st-msg-warn`). */
+.st-msg {
+    flex: 1; min-width: 0;
+    color: var(--fg-mute);
+    letter-spacing: 0.02em;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.st-msg[hidden] { display: none; }
+.st-msg.st-msg-keys { color: var(--accent-2); font-weight: 600; }
+.st-msg.st-msg-warn { color: var(--accent); }
+
+.cmd-prompt { color: var(--accent); font-weight: 700; flex: none; }
+.cmd-field { position: relative; flex: 1; display: flex; align-items: center; gap: 6px; }
+.cmd-field[hidden] { display: none; }
 .cmd-input {
     flex: 1; background: none; border: none; outline: none;
-    color: var(--fg); font-family: var(--font-mono); font-size: 0.95rem;
+    color: var(--fg); font-family: var(--font-mono); font-size: 0.85rem;
     caret-color: var(--accent);
 }
 .cmd-input::placeholder { color: var(--fg-mute); }
-.cmd-k kbd { margin: 0; }
 
 /* bottom-bar block cursor (nvim NORMAL mode) */
 .bar-mirror {
     position: absolute; left: 0; top: 0;
     visibility: hidden; white-space: pre; pointer-events: none;
-    font-family: var(--font-mono); font-size: 0.95rem;
+    font-family: var(--font-mono); font-size: 0.85rem;
 }
 .bar-caret {
     position: absolute; top: 50%; transform: translateY(-50%);
@@ -482,7 +500,20 @@ kbd {
    A status card is a timestamped "what I'm doing now" block embedded inline in a
    note document, interleaved with prose. The left accent rail + monospace header
    echo the reference design; the body reuses the shared .md renderer. */
-.doc-prose { margin: 0.2em 0; }
+.doc-prose {
+    margin: 0.2em 0;
+    /* Contenteditable edits the markdown SOURCE: preserve newlines/runs of spaces
+       and wrap long lines so the editing surface matches what gets saved. */
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+/* Empty prose block shows its placeholder so a blank document still invites a
+   first keystroke (the :empty selector only matches with zero child nodes). */
+.doc-prose:empty::before {
+    content: attr(data-placeholder);
+    color: var(--fg-mute);
+    pointer-events: none;
+}
 .doc-empty {
     margin: 24px 0; padding: 18px 20px; border: 1px dashed var(--ink-line);
     border-radius: var(--radius); color: var(--fg-mute); font-size: 0.9rem; line-height: 1.7;
@@ -514,3 +545,117 @@ kbd {
 .status-card .sc-body { padding: 12px 14px; }
 .status-card .sc-body > :first-child { margin-top: 0; }
 .status-card .sc-body > :last-child { margin-bottom: 0; }
+
+/* ════════════════════════════════════════════════════════════════════════════
+   KEYBOARD-FIRST INTERACTION LAYER
+   Selection re-enable · scope focus · cursor item · editable prose · which-key.
+   The global `:root { user-select: none }` keeps chrome unselectable; the rules
+   below carve out the real content regions so the mouse/clipboard work again.
+   ════════════════════════════════════════════════════════════════════════════ */
+
+/* ── 1 · RE-ENABLE MOUSE / TEXT SELECTION inside content ──────────────────────
+   Root kills selection globally (anti-chrome-drag). Restore it where the user
+   reads/edits actual text. Links & buttons keep their pointer cursor below. */
+.detail-scroll,
+.md,
+.sc-body,
+.doc-prose,
+.ni-sub {
+    user-select: text;
+    -webkit-user-select: text;
+    cursor: text;
+}
+.md a,
+.sc-links,
+.detail-scroll a,
+.detail-scroll button,
+.doc-prose a {
+    cursor: pointer;
+}
+
+/* ── 2 · SCOPE FOCUS HIGHLIGHT ────────────────────────────────────────────────
+   The pane owning the cursor gets `.scope-focus`. Subtle inset accent ring so
+   the active scope is always legible. GPU-cheap: box-shadow/border only. */
+.scope-focus {
+    position: relative;
+}
+/* sidebar + cmdbar: inset accent ring (they already have their own bg) */
+#sidebar.scope-focus,
+#cmdbar.scope-focus {
+    box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 60%, transparent),
+                inset 0 0 14px -6px var(--accent);
+}
+/* detail scroll lives inside .detail; a left accent rail reads as "focused pane" */
+#detailScroll.scope-focus {
+    box-shadow: inset 3px 0 0 0 var(--accent),
+                inset 0 0 18px -10px var(--accent);
+}
+
+/* ── 3 · CURSOR ITEM HIGHLIGHT ────────────────────────────────────────────────
+   Within the active scope the focused item carries `.is-cursor`. Must read as
+   "the cursor is HERE" and survive co-occurring `.is-active`. Uses a bright
+   accent ring + a left cursor bar so it wins over the softer active state. */
+.note-item.is-cursor,
+.status-card.is-cursor,
+.doc-prose.is-cursor {
+    box-shadow: 0 0 0 1.5px var(--accent),
+                0 0 16px -6px var(--accent);
+    border-color: var(--accent);
+}
+.note-item.is-cursor {
+    background: var(--accent-soft);
+    border-radius: 11px;
+}
+.status-card.is-cursor {
+    border-left-color: var(--accent);
+}
+.doc-prose.is-cursor {
+    border-radius: var(--radius-sm);
+    background: var(--accent-soft);
+}
+/* cursor bar marker — shared across the three cursorable item types */
+.note-item.is-cursor::after,
+.status-card.is-cursor::after,
+.doc-prose.is-cursor::after {
+    content: "";
+    position: absolute;
+    left: -2px; top: 50%; transform: translateY(-50%);
+    width: 4px; height: 60%; max-height: 26px; min-height: 14px;
+    border-radius: 3px;
+    background: var(--accent);
+    box-shadow: 0 0 10px -1px var(--accent);
+    pointer-events: none;
+}
+.status-card.is-cursor,
+.doc-prose.is-cursor {
+    position: relative;
+}
+/* keep cursor visible when item is ALSO active: the brighter ring sits on top */
+.note-item.is-cursor.is-active {
+    box-shadow: 0 0 0 1.5px var(--accent),
+                0 6px 18px -10px rgba(255, 159, 69, 0.5);
+}
+
+/* ── 4 · EDITABLE PROSE ───────────────────────────────────────────────────────
+   Prose blocks flip to contenteditable. On focus give an inline-editor feel:
+   soft focus ring + faint backdrop, no blunt textarea outline. */
+.doc-prose[contenteditable="true"] {
+    cursor: text;
+    border-radius: var(--radius-sm);
+    transition: background 0.12s ease, box-shadow 0.12s ease;
+}
+.doc-prose[contenteditable="true"]:hover {
+    background: rgba(255, 255, 255, 0.02);
+}
+.doc-prose[contenteditable="true"]:focus {
+    outline: none;
+    background: rgba(255, 255, 255, 0.035);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-2) 45%, transparent),
+                0 0 18px -8px var(--accent-2);
+    padding: 2px 8px;
+    margin-left: -8px; margin-right: -8px;
+}
+
+/* ── 5 · LEADER ───────────────────────────────────────────────────────────────
+   The floating which-key overlay was removed: leader feedback is now inline,
+   nvim "showcmd" style, in the statusline `.st-msg` area (see STATUSLINE). */

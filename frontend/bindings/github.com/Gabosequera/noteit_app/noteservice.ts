@@ -143,6 +143,36 @@ export function ProjectRoot(): $CancellablePromise<string> {
 }
 
 /**
+ * SaveDocument persists an edited block list as the note's new body WITHOUT
+ * touching the timeline. This is the prose-save path: the Outline-style free-text
+ * editor hands back the whole ordered block list after the user edits prose, and
+ * we rewrite the .md file to match. Editing prose is not a card lifecycle event,
+ * so — unlike AddCard/UpdateCard/DeleteCard/LinkCards — SaveDocument is
+ * intentionally history-free and appends NO journal event. Card create/update/
+ * delete/link still go exclusively through the journaled methods above; this one
+ * only moves the "present" forward, never the history.
+ * 
+ * Card rendering reuses saveBlocksLocked → renderBlocks → renderCard, which
+ * already guards card BODIES against a bare close fence. Prose blocks bypass that
+ * guard (renderBlocks emits text verbatim), so a bare `:::` typed into prose would
+ * otherwise persist and be re-parsed as a stray close fence, corrupting the
+ * document on the next read. We therefore reject any prose block containing a lone
+ * `:::` here and surface it to the caller rather than silently corrupting the file.
+ * 
+ * We return the Document RE-PARSED from the saved canonical body rather than
+ * echoing the input blocks: renderBlocks normalizes spacing and merges/drops
+ * blocks (e.g. two adjacent prose blocks collapse into one), so re-parsing
+ * guarantees the caller sees exactly what landed on disk — the canonical form a
+ * subsequent GetDocument would return — with no drift between the in-memory reply
+ * and the persisted file.
+ */
+export function SaveDocument(noteID: string, blocks: $models.Block[]): $CancellablePromise<$models.Document> {
+    return $Call.ByID(1504716789, noteID, blocks).then(($result: any) => {
+        return $$createType1($result);
+    });
+}
+
+/**
  * Timeline returns the full chronological journal for the project. The frontend
  * groups this into the precise "what happened when" view and, later, the graph.
  */

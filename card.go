@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -59,6 +60,13 @@ const (
 // errCardFenceInBody guards content that would break the fence round-trip. The
 // service layer surfaces this rather than silently corrupting a document.
 var errCardFenceInBody = fmt.Errorf("card content may not contain a line equal to %q", cardFenceClose)
+
+// errCardMutationInProseSave guards the prose-save path (SaveDocument) against
+// card lifecycle changes. Cards may only be created/updated/deleted/linked
+// through the journaled methods (AddCard/UpdateCard/DeleteCard/LinkCards) so the
+// timeline stays complete. SaveDocument therefore rejects any block list whose
+// cards differ — in count, order, or content — from what is already on disk.
+var errCardMutationInProseSave = errors.New("SaveDocument may not add, remove, reorder, or edit cards; use the card methods")
 
 // parseBlocks splits a note body into ordered prose/card blocks. It is tolerant:
 // any text outside a well-formed card fence is preserved as a text block, and an
