@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=noteit
+Exec=noteit
+Icon=noteit
+Categories=Development;
+Terminal=false
+Keywords=wails
+Version=1.0
+StartupNotify=false
