@@ -36,18 +36,34 @@
         <main class="detail" id="detail">
             <div class="detail-scroll" id="detailScroll"><!-- active note rendered in main.ts --></div>
 
-            <!-- Thin nvim/vscode-style statusline. The mode segment is always
-                 shown; `stMsg` is the showcmd area (pending leader keys +
-                 transient notices). The composer field stays hidden until you
-                 actually enter COMPOSE scope, so there's no persistent input. -->
+            <!-- lualine/powerline-style statusline. Segments (mode → branch →
+                 folder → file) read left-to-right with CSS powerline arrows; the
+                 right cluster shows the cursor line:col. `stMsg` is the showcmd
+                 area (pending leader keys + transient notices). The composer
+                 field stays hidden until you enter COMPOSE scope. The whole bar
+                 lives inside .detail, so it never spills under the sidebar. -->
             <div class="cmdbar" id="cmdbar">
-                <span class="mode" id="mode">-- DOC --</span>
+                <div class="sl-left">
+                    <span class="sl-seg sl-mode" id="mode" data-mode="normal">NORMAL</span>
+                    <span class="sl-seg sl-branch" id="slBranch" hidden>⎇&nbsp;<span id="slBranchTxt"></span></span>
+                    <span class="sl-seg sl-folder">
+                        <svg class="sl-ico" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+                        <span class="sl-txt" id="slFolder">devlog</span>
+                    </span>
+                    <span class="sl-seg sl-file">
+                        <svg class="sl-ico" viewBox="0 0 24 24"><path d="M7 3h7l5 5v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v5h5"/></svg>
+                        <span class="sl-txt" id="slFile">untitled</span>
+                    </span>
+                </div>
                 <span class="st-msg" id="stMsg"></span>
                 <div class="cmd-field" id="cmdField" hidden>
                     <span class="cmd-prompt">›</span>
                     <input class="cmd-input" id="cmdInput" spellcheck="false" autocomplete="off"/>
                     <span class="bar-caret" id="barCaret"></span>
                     <span class="bar-mirror" id="barMirror" aria-hidden="true"></span>
+                </div>
+                <div class="sl-right">
+                    <span class="sl-seg sl-pos" id="slPos">1:1</span>
                 </div>
             </div>
         </main>

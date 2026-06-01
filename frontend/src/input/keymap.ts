@@ -139,9 +139,10 @@ export const DEFAULT_KEYMAP: Binding[] = [
   // Universal escape.
   { keys: "escape", scope: "global", command: "scope.escape" },
 
-  // Insert / edit entry points (scope-specific meaning).
+  // Insert / edit entry points (scope-specific meaning). In the document scope
+  // the CodeMirror+vim buffer owns `i` (insert mode) directly, so there is no
+  // app-level binding for it there.
   { keys: "i", scope: "sidebar", command: "scope.focusCompose" },
-  { keys: "i", scope: "document", command: "document.editCursor" },
 
   // Leader sub-keys (active while LEADER scope is pending).
   { keys: "n", scope: "leader", command: "note.create" },
