@@ -72,10 +72,10 @@ function fuzzy(query: string, target: string): number {
 export class Cmdline {
     private deps: CmdlineDeps;
     private commands: Command[];
-    private overlay: HTMLElement;
-    private textEl: HTMLElement;
-    private suggestEl: HTMLElement;
-    private confirmEl: HTMLElement;
+    private overlay!: HTMLElement;
+    private textEl!: HTMLElement;
+    private suggestEl!: HTMLElement;
+    private confirmEl!: HTMLElement;
 
     private open = false;
     private buffer = "";
