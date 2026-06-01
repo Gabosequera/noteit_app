@@ -77,6 +77,11 @@
 }
 
 * { box-sizing: border-box; }
+/* The `hidden` attribute must always collapse the element. Class rules that set
+   `display` (e.g. .detail-empty{display:grid}) otherwise out-specify the UA
+   `[hidden]{display:none}` and the node stays visible — which is what made the
+   empty-state split the editor height 50/50. Force it to win everywhere. */
+[hidden] { display: none !important; }
 
 /* Percentage heights (not vh/vw): WebKitGTK resolves vh to 0 during early layout. */
 html, body { height: 100%; }
@@ -282,31 +287,72 @@ body { margin: 0; min-height: 100%; }
 .md .task.done .box { background: var(--good); border-color: var(--good); color: #06281a; }
 .md .task.done { color: var(--fg-mute); text-decoration: line-through; }
 
-/* ════════════════ STATUSLINE (inside the detail panel) ════════════════
-   A thin nvim/vscode-style status bar: a small mode segment on the left, a
-   showcmd area for pending leader keys / transient notices, and a composer
-   field that only appears while in COMPOSE scope. No persistent input. */
+/* ════════════════ STATUSLINE (lualine / powerline, inside the detail panel) ════
+   A nvim-style status bar built from butted color segments with CSS powerline
+   arrows (no Nerd Font needed). Left cluster: mode → branch → folder → file.
+   Right cluster: cursor line:col. Between them sits the showcmd/message area and
+   the COMPOSE input. The bar is a child of .detail, so it only ever spans the
+   text pane and never reaches under the sidebar. */
 .cmdbar {
-    display: flex; align-items: center; gap: 10px;
-    padding: 3px 12px;
-    min-height: 24px;
+    display: flex; align-items: stretch; gap: 0;
+    height: 26px; min-height: 26px;
     border-top: 1px solid var(--ink-line);
-    background: rgba(0, 0, 0, 0.30);
+    background: var(--ink);            /* darkest base the arrows transition into */
     font-family: var(--font-mono);
     font-size: 0.72rem;
+    overflow: hidden;
 }
-.mode {
-    font-weight: 700; font-size: 0.64rem; letter-spacing: 0.07em;
-    color: #16210f; background: var(--olive);
-    padding: 2px 7px; border-radius: 4px; flex: none;
-    transition: background 0.15s ease, color 0.15s ease;
+
+/* segment clusters */
+.sl-left, .sl-right { display: flex; align-items: stretch; flex: none; }
+.sl-right { margin-left: auto; }
+
+/* one segment: solid background + a powerline arrow rendered from its own color */
+.sl-seg {
+    display: flex; align-items: center; gap: 6px;
+    padding: 0 9px 0 12px;
+    font-weight: 600; letter-spacing: 0.03em; white-space: nowrap;
+    position: relative;
 }
-.cmdbar.normal .mode { background: #21314a; color: var(--accent-2); }
+.sl-seg[hidden] { display: none; }
+.sl-ico { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 2; opacity: 0.9; }
+
+/* left cluster arrows point right (into the next segment / the base) */
+.sl-left .sl-seg::after {
+    content: ""; position: absolute; right: -9px; top: 0; bottom: 0; width: 9px;
+    background: inherit; z-index: 2;
+    clip-path: polygon(0 0, 0 100%, 100% 50%);
+}
+/* right cluster arrows point left (into the base) */
+.sl-right .sl-seg { padding: 0 12px 0 14px; }
+.sl-right .sl-seg::before {
+    content: ""; position: absolute; left: -9px; top: 0; bottom: 0; width: 9px;
+    background: inherit; z-index: 2;
+    clip-path: polygon(100% 0, 100% 100%, 0 50%);
+}
+
+/* segment palette (mode is brightest; each step darker toward the base) */
+.sl-mode   { background: #3168c4; color: #eaf2ff; font-weight: 700; letter-spacing: 0.06em; }
+.sl-branch { background: #2c3a52; color: #cdd9ec; }
+.sl-folder { background: #25303f; color: #b3c0d4; }
+.sl-file   { background: #1d2735; color: #9fb0c8; }
+.sl-pos    { background: #2c3a52; color: #cdd9ec; }
+
+/* mode colors per vim mode / scope (the arrow inherits the bg automatically) */
+.sl-mode[data-mode="insert"]        { background: #2f8f4e; color: #eafff0; }
+.sl-mode[data-mode="visual"],
+.sl-mode[data-mode="visual-line"],
+.sl-mode[data-mode="visual-block"]  { background: #c8842a; color: #2a1705; }
+.sl-mode[data-mode="replace"]       { background: #c34646; color: #ffecec; }
+.sl-mode[data-mode="compose"]       { background: #2ba093; color: #04211d; }
+.sl-mode[data-mode="sidebar"]       { background: #54607a; color: #f0f3fa; }
+.sl-mode[data-mode="leader"]        { background: #8254e0; color: #f1ebff; }
 
 /* showcmd / message area. Default dim; highlighted while a leader key sequence
    is pending (`st-msg-keys`) or flashing a transient notice (`st-msg-warn`). */
 .st-msg {
-    flex: 1; min-width: 0;
+    flex: 1; min-width: 0; display: flex; align-items: center;
+    padding: 0 12px;
     color: var(--fg-mute);
     letter-spacing: 0.02em;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -316,7 +362,7 @@ body { margin: 0; min-height: 100%; }
 .st-msg.st-msg-warn { color: var(--accent); }
 
 .cmd-prompt { color: var(--accent); font-weight: 700; flex: none; }
-.cmd-field { position: relative; flex: 1; display: flex; align-items: center; gap: 6px; }
+.cmd-field { position: relative; flex: 1; display: flex; align-items: center; gap: 6px; padding: 0 12px; }
 .cmd-field[hidden] { display: none; }
 .cmd-input {
     flex: 1; background: none; border: none; outline: none;
@@ -556,6 +602,36 @@ kbd {
 .status-card .sc-body { padding: 12px 14px; }
 .status-card .sc-body > :first-child { margin-top: 0; }
 .status-card .sc-body > :last-child { margin-bottom: 0; }
+
+/* ───────────────────────── Editor card widget (live preview) ─────────────────────────
+   A `:::card` fence rendered inside the CodeMirror buffer as a block widget. Same
+   visual language as .status-card, but self-contained so it doesn't depend on the
+   document renderer. The block reads as a card while you navigate prose; clicking
+   it drops the cursor inside and the editor reveals the raw fence for editing. */
+.cm-card {
+    margin: 10px 0; border: 1px solid var(--ink-line); border-left: 2px solid var(--accent);
+    border-radius: var(--radius-sm); background: var(--bg-card);
+    overflow: hidden; contain: content; cursor: pointer;
+    font-family: var(--font-ui);
+}
+.cm-card-head {
+    display: flex; align-items: center; gap: 10px;
+    padding: 7px 13px; border-bottom: 1px solid var(--ink-line);
+    background: rgba(255,255,255,0.02);
+    font-family: var(--font-mono); font-size: 0.74rem; color: var(--fg-mute);
+}
+.cm-card-ts { color: var(--warn); letter-spacing: 0.02em; }
+.cm-card-spacer { flex: 1; }
+.cm-card-author { color: var(--fg-dim); }
+.cm-card-author::before { content: "@"; color: var(--fg-mute); }
+.cm-card-links {
+    color: var(--accent-2); border: 1px solid rgba(88,166,255,0.30);
+    border-radius: 6px; padding: 1px 7px; font-size: 0.72rem;
+}
+.cm-card-body {
+    padding: 11px 14px; color: var(--fg-dim); font-size: 0.92rem; line-height: 1.6;
+    white-space: pre-wrap; word-break: break-word;
+}
 
 /* ════════════════════════════════════════════════════════════════════════════
    KEYBOARD-FIRST INTERACTION LAYER

@@ -17,6 +17,7 @@ import { markdown } from "@codemirror/lang-markdown";
 import { syntaxHighlighting, HighlightStyle, indentOnInput } from "@codemirror/language";
 import { tags as t } from "@lezer/highlight";
 import { vim, getCM } from "@replit/codemirror-vim";
+import { cardPreview } from "./cards.js";
 
 /** Vim modes surfaced to the app statusline. */
 export type VimMode = "normal" | "insert" | "visual" | "replace" | "visual-line" | "visual-block";
@@ -28,6 +29,9 @@ export interface NoteEditorOpts {
     onChange?: (doc: string) => void;
     /** Fired whenever the vim mode changes — drives the bottom statusline. */
     onModeChange?: (mode: VimMode) => void;
+    /** Fired whenever the cursor moves (1-based line + column) — drives the
+        line:col segment in the statusline, nvim-style. */
+    onCursorChange?: (line: number, col: number) => void;
     /** Show line numbers (off by default — prose reads cleaner without them). */
     lineNumbers?: boolean;
 }
@@ -59,15 +63,15 @@ const noteitTheme = EditorView.theme(
         ".cm-selectionBackground, &.cm-focused .cm-selectionBackground, ::selection": {
             backgroundColor: "rgba(88,166,255,0.20)",
         },
-        // nvim-style block cursor (vim normal/visual). White-ish like the editor
-        // in the reference screenshot; the char underneath flips to the ink color.
+        // nvim-style block cursor (vim normal/visual). Solid white; the char
+        // underneath flips to the ink color so it stays readable.
         ".cm-fat-cursor": {
-            background: "#dfe7f0",
+            background: "#fff",
             color: "var(--ink)",
         },
         "&:not(.cm-focused) .cm-fat-cursor": {
             background: "none",
-            outline: "1px solid #dfe7f0",
+            outline: "1px solid #fff",
             color: "inherit",
         },
         // thin caret for insert mode
@@ -110,9 +114,18 @@ export class NoteEditor {
     constructor(opts: NoteEditorOpts) {
         this.onChange = opts.onChange;
 
+        const onCursorChange = opts.onCursorChange;
         const changeListener = EditorView.updateListener.of((u) => {
             if (u.docChanged && this.onChange && !this.suppressChange) {
                 this.onChange(u.state.doc.toString());
+            }
+            // Report cursor line:col on any selection or doc change (incl. the
+            // programmatic setDoc that resets to the top), so the statusline
+            // line:col segment tracks the caret like nvim.
+            if (onCursorChange && (u.selectionSet || u.docChanged)) {
+                const head = u.state.selection.main.head;
+                const line = u.state.doc.lineAt(head);
+                onCursorChange(line.number, head - line.from + 1);
             }
         });
 
@@ -123,6 +136,7 @@ export class NoteEditor {
             indentOnInput(),
             markdown(),
             syntaxHighlighting(noteitHighlight),
+            cardPreview, // render inline :::card fences as live-preview widgets
             EditorView.lineWrapping, // prose wraps like Obsidian
             noteitTheme,
             keymap.of([...defaultKeymap, ...historyKeymap]),

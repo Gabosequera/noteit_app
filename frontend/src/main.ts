@@ -83,6 +83,12 @@ const modeEl = document.getElementById("mode")!;
 const stMsg = document.getElementById("stMsg")!;
 const barCaret = document.getElementById("barCaret")!;
 const barMirror = document.getElementById("barMirror")!;
+/* lualine-style statusline segments. */
+const slBranch = document.getElementById("slBranch")!;
+const slBranchTxt = document.getElementById("slBranchTxt")!;
+const slFolder = document.getElementById("slFolder")!;
+const slFile = document.getElementById("slFile")!;
+const slPos = document.getElementById("slPos")!;
 const toastEl = document.getElementById("toast")!;
 
 let active = 0;                                   // index into visibleNotes()
@@ -197,6 +203,7 @@ function ensureEditor() {
         doc: "",
         onChange: (doc) => scheduleBodySave(doc),
         onModeChange: (m) => onVimMode(m),
+        onCursorChange: (line, col) => { slPos.textContent = `${line}:${col}`; },
     });
 }
 
@@ -205,13 +212,22 @@ function ensureEditor() {
    exactly like nvim's modeline. */
 function vimModeLabel(m: VimMode): string {
     switch (m) {
-        case "insert": return "-- INSERT --";
-        case "visual": return "-- VISUAL --";
-        case "visual-line": return "-- V·LINE --";
-        case "visual-block": return "-- V·BLOCK --";
-        case "replace": return "-- REPLACE --";
-        default: return "-- NORMAL --";
+        case "insert": return "INSERT";
+        case "visual": return "VISUAL";
+        case "visual-line": return "V·LINE";
+        case "visual-block": return "V·BLOCK";
+        case "replace": return "REPLACE";
+        default: return "NORMAL";
     }
+}
+
+/* paintMode drives the lualine mode segment: the label text plus a `data-mode`
+   attribute that the CSS maps to a per-mode color (blue normal, green insert,
+   amber visual, red replace, …). The `.normal` class on the bar is kept only to
+   drive the composer's block caret (it shows when not actively typing). */
+function paintMode(label: string, kind: string) {
+    modeEl.textContent = label;
+    modeEl.dataset.mode = kind;
 }
 function onVimMode(m: VimMode) {
     vimMode = m;
@@ -219,8 +235,7 @@ function onVimMode(m: VimMode) {
     // pending leader). In other scopes the mode segment shows that scope's label.
     const cur = scope === LEADER ? prevScope : scope;
     if (cur === DOCUMENT) {
-        modeEl.textContent = vimModeLabel(m);
-        // Insert mode reads like "typing": warm olive badge. Else the cool nav badge.
+        paintMode(vimModeLabel(m), m);
         cmdbar.classList.toggle("normal", m !== "insert");
     }
 }
@@ -233,6 +248,7 @@ function onVimMode(m: VimMode) {
    un-saved keystrokes with the last-loaded body. */
 function renderDetail() {
     ensureEditor();
+    paintStatusSegments();
     const head = detailHead!, host = editorHost!, empty = detailEmpty!;
 
     const list = visibleNotes();
@@ -637,9 +653,10 @@ function setScope(next: Scope) {
     const inCompose = next === COMPOSE;
     cmdInput.readOnly = !inCompose;
     cmdbar.classList.toggle("normal", !inCompose);
-    // In the document, the mode segment mirrors the live vim mode (NORMAL/INSERT/…);
-    // every other scope shows its own static label.
-    modeEl.textContent = next === DOCUMENT ? vimModeLabel(vimMode) : scopeLabel(next);
+    // In the document, the mode segment mirrors the live vim mode (NORMAL/INSERT/…)
+    // with its color; every other scope shows its own static label + scope color.
+    if (next === DOCUMENT) paintMode(vimModeLabel(vimMode), vimMode);
+    else paintMode(scopeLabel(next), next);
 
     // The composer field is only present while composing; otherwise the showcmd
     // area owns the row. This is what keeps the statusline thin by default.
@@ -673,12 +690,25 @@ function setScope(next: Scope) {
 
 function scopeLabel(s: Scope): string {
     switch (s) {
-        case COMPOSE: return "-- COMPOSE --";
-        case SIDEBAR: return "-- NOTES --";
-        case DOCUMENT: return "-- DOC --";
-        case LEADER: return "-- LEADER --";
-        default: return `-- ${s.toUpperCase()} --`;
+        case COMPOSE: return "COMPOSE";
+        case SIDEBAR: return "NOTES";
+        case DOCUMENT: return "NORMAL";
+        case LEADER: return "LEADER";
+        default: return s.toUpperCase();
     }
+}
+
+/* paintStatusSegments fills the lualine context segments (branch · folder · file)
+   from the active note and the current folder/tag. Hidden segments collapse, so
+   a note with no git branch simply drops that segment instead of showing a gap. */
+function paintStatusSegments() {
+    const list = visibleNotes();
+    const n = list[active];
+    const branch = n?.branch ?? "";
+    slBranch.hidden = !branch;
+    if (branch) slBranchTxt.textContent = branch;
+    slFolder.textContent = tagFilter ?? baseFolder;
+    slFile.textContent = n?.title || "—";
 }
 
 /* Paint the focused-pane accent ring on whichever pane owns the cursor. */
