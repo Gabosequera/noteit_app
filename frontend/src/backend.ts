@@ -6,16 +6,17 @@
    generation we call them directly by their fully-qualified name.
 
    $Call.ByName resolves on the Go side via bindings.Get(), which keys bound
-   methods by FQN = "<packagePath>.<Type>.<Method>" (bindings.go). For this app
-   the package path is the module path, so the prefix is:
-       github.com/Gabosequera/noteit_app.NoteService.<Method>
+   methods by FQN = "<packagePath>.<Type>.<Method>" (bindings.go). NoteService is
+   declared in `package main`, so reflect's PkgPath() — and therefore the FQN
+   prefix the runtime registers — is just "main", NOT the module path. (The
+   generated bindings confirm this: their FNV method IDs hash from "main.…".)
    Keep these in sync by regenerating bindings once the generator works again and
    deleting this shim. */
 
 import { Call as $Call } from "@wailsio/runtime";
 import { Note } from "../bindings/github.com/Gabosequera/noteit_app/index.js";
 
-const SVC = "github.com/Gabosequera/noteit_app.NoteService";
+const SVC = "main.NoteService";
 
 /**
  * SaveBody overwrites a note's whole Markdown body and returns the re-parsed Note.
