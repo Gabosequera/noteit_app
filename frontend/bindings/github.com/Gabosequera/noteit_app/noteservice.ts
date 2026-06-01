@@ -143,6 +143,21 @@ export function ProjectRoot(): $CancellablePromise<string> {
 }
 
 /**
+ * SaveBody overwrites a note's entire Markdown body with `body` and rewrites it
+ * to disk, bumping Updated. This is the Obsidian-style raw-text save path: the
+ * editor owns the whole document (prose AND inline card fences) as plain text,
+ * so there is no block diffing and no journaling here — it simply replaces the
+ * "present" body. The note's frontmatter (title, tags, status, anchors, …) is
+ * preserved by re-rendering the parsed note with only Body/Updated changed. The
+ * id is validated and the write is atomic.
+ */
+export function SaveBody(noteID: string, body: string): $CancellablePromise<$models.Note> {
+    return $Call.ByID(3106496432, noteID, body).then(($result: any) => {
+        return $$createType0($result);
+    });
+}
+
+/**
  * SaveDocument persists an edited block list as the note's new body WITHOUT
  * touching the timeline. This is the prose-save path: the Outline-style free-text
  * editor hands back the whole ordered block list after the user edits prose, and
