@@ -34,14 +34,22 @@ Forma final:
 
 ```
 Card {
-  id        // uuid v7 — ordena por tiempo, inmutable
+  id        // uuid v7 — ordena por tiempo, inmutable. ES la identidad/"título".
   created   // timestamp RFC3339Nano — posición LEGIBLE en la timeline
-  title     // UNA línea — el "qué" rápido (lo que va después del `:`)
-  body      // markdown multilínea, OPCIONAL (se escribe tras el Enter)
+  body      // markdown (1+ líneas) — el "qué". NO hay título separado.
   tags {}   // 6 ejes controlados → ver docs/v3/taxonomy.md
-  ref?      // UNA referencia (o ninguna) a otra tarjeta por id. LINK NEUTRO.
+  ref?      // { id, kind } — UNA referencia (o ninguna) a otra tarjeta.
+            //   kind=link   → link neutro (default)
+            //   kind=parent → "anídame bajo esa" (esto genera el anidado)
 }
 ```
+
+**Sin `title`.** La tarjeta es solo `body`; su identidad/"título" es el `id`. Las
+tarjetas son rápidas ("qué estoy haciendo"). Si querés usar una como
+**encabezado** que agrupa a otras, no hay un campo ni un tipo especial: su `body`
+ES el encabezado, y las "hijas" son tarjetas normales con `ref kind=parent`
+apuntándola. El anidado lo **deriva la vista** agrupando por ese `ref` — la
+tarjeta-encabezado nunca se entera (sigue inmutable), igual que los backlinks.
 
 `tags` es un **mapa por eje** (no una lista plana), según el diccionario:
 `{ type, status, priority?, horizon?, area[], effort? }`. `type` y `status`
@@ -58,10 +66,12 @@ siempre están materializados (defaults `note` / `todo`); el resto solo si se se
   que guardamos un RFC3339(Nano) explícito como el "cuándo" semántico. Se generan
   juntos en el mismo instante → nunca se contradicen. (id = identificador + orden
   grueso; created = tiempo legible y de precisión fina.)
-- **`ref` es un LINK NEUTRO, sin semántica.** Por ahora NO hay `update` ni
-  `reply` con comportamiento: una `ref` solo dice "esta tarjeta apunta a aquella".
-  Nada de lógica de "supersede" ni estado derivado. El campo de tipo queda
-  **reservado** para sumar `reply`/`update` después sin tocar el storage.
+- **`ref` lleva un `kind`.** El primer uso concreto del slot de tipo reservado:
+  `kind=link` (default, link neutro: "apunta a aquella", sin semántica de
+  supersede) y `kind=parent` (estructural: "anídame bajo aquella" → genera el
+  anidado en la vista). `kind=parent` es **estructural, NO** update/reply: no hay
+  lógica de supersede ni estado derivado del contenido. `reply`/`update` siguen
+  reservados para sumarlos después sin tocar el storage.
 - **Cardinalidad de `ref`: UNA sola** por ahora. Decisión barata de revertir: la
   lógica de refs se modela **abstracta y desacoplada** (cardinalidad y tipo viven
   en UN punto), así pasar a N refs o a refs tipadas después es cambiar config, no
@@ -75,10 +85,11 @@ siempre están materializados (defaults `note` / `todo`); el resto solo si se se
 
 **Reglas:**
 - Una tarjeta **nunca** se edita ni se borra. Es inmutable de por vida.
-- Relacionar tarjetas = crear **otra** tarjeta con una `ref` que apunta a la
-  primera. Son objetos separados que se linkean; nunca anidados.
+- Relacionar/anidar tarjetas = crear **otra** tarjeta con una `ref` que apunta a
+  la primera. Son objetos separados que se linkean; el "anidado" es solo cómo la
+  vista los agrupa (`kind=parent`), no objetos físicamente anidados.
 - El grafo se **reconstruye** siguiendo las `ref` (salientes) y derivando los
-  backlinks (entrantes) al recorrer el store.
+  backlinks/hijas (entrantes) al recorrer el store.
 - `created` (+ el id v7) es único → no hay dos tarjetas en el mismo instante.
 
 **Modelo de tags** → cerrado en `docs/v3/taxonomy.md` (6 ejes, 33 canónicos,
@@ -91,15 +102,17 @@ Pendiente menor (no bloquea Fase 1):
 
 ## 1·B. Entrada rápida (quick-entry)  **[CERRADO]**
 
-Crear una tarjeta es UNA línea + el cuerpo:
+Crear una tarjeta es UNA línea:
 
 ```
-‹tags…› : ‹título›      —Enter→      ‹body markdown (opcional)›
+‹tags…› : ‹body›        —Enter→ CREA la tarjeta y la agrega a la timeline
 ```
 
 - **Antes del `:`** = tags (palabras sueltas, **orden libre**).
-- **Después del `:`** = el **título** (una sola línea).
-- **Enter** confirma el título y abre el **body** (markdown, multilínea, opcional).
+- **Después del `:`** = el **body** (el "qué"). No hay título.
+- **Enter** = **crea** la tarjeta y la agrega al final de la timeline global.
+- **Shift+Enter** = salto de línea dentro del body (para body multilínea).
+- Si no hay `:`, todo el texto es body (sin tags más allá de los defaults).
 
 **Normalización (heurística pura, por token):** `lowercase` → quitar acentos →
 buscar en el diccionario (`taxonomy.md`) → `(eje, canónico)`. El programa corta
@@ -134,18 +147,16 @@ Un único markdown legible, append-only: **`.noteit/timeline.md`**.
 Cada tarjeta es un bloque estilo wheel-journal, separado por `---`:
 
 ```
-> CARD | id:<uuid-v7> | <created-rfc3339> | type:feat | status:doing | priority:p1 | horizon:next | area:client,backend | effort:m | ref:<id>
-<título — primera línea tras el header>
-
-<body markdown opcional, puede tener varias líneas e imágenes>
+> CARD | id:<uuid-v7> | created:<rfc3339> | type:feat | status:doing | priority:p1 | horizon:next | area:client,backend | effort:m | ref:<id>:parent
+<body markdown — desde la primera línea tras el header; 1+ líneas, imágenes ok>
 ```
 
 - **Header** = línea `> CARD | …`. Cada eje es su token `key:value` (legible,
   auto-etiquetado). `area` multi = coma-separado. Se omiten los ejes ausentes;
-  `type`/`status` siempre presentes. `ref` (un solo id, link neutro) se omite si
-  no hay. Sin `author` — single-user.
-- **Título** = primera línea no vacía después del header.
-- **Body** = todo lo que sigue tras una línea en blanco (opcional).
+  `type`/`status` siempre presentes. `ref` se omite si no hay; cuando está, lleva
+  el `kind`: `ref:<id>` (link neutro) o `ref:<id>:parent` (anidado). Sin
+  `author` — single-user.
+- **Body** = todo lo que sigue al header (sin línea de título). No hay título.
 
 (Formato exacto a confirmar cuando escribamos el parser, pero esta es la forma.)
 
@@ -159,8 +170,52 @@ Más limpio para concurrencia pero genera muchos archivos; lo reconsideramos si 
 archivo único crece demasiado.
 
 Puntos a resolver más adelante:
-- Formato EXACTO de la línea de cabecera (lo cerramos cuando escribamos el parser).
 - ¿Una sola timeline global, o el archivo admite "secciones"? (ver §3).
+
+---
+
+## 2·B. Contrato de parseo/escritura (D)  **[CERRADO]**
+
+La "letra chica" para que `timeline.md` no se corrompa ni se rompa al leer.
+
+**D.1 · Parseo anclado al header con validación por keys.** El archivo NO se parte
+por `---`; eso es markdown válido y aparecería dentro de un body. Se parte por cada
+línea que empieza con `> CARD`. Pero `> CARD` **no basta**: la línea es un header
+válido solo si sus tokens (separados por ` | `) son **`key:value` con `key` ∈ el
+set de campos que definimos** — `{ id, created, type, status, priority, horizon,
+area, effort, ref }` — y están las **requeridas** (`id`, `created`, `type`,
+`status`). Se validan las **keys**, NUNCA los valores (cada tarjeta trae valores
+distintos). Una línea `> CARD …` que no cumpla esto NO es un header (es body, o un
+bloque corrupto → D.5). Una key desconocida invalida el header.
+
+**D.2 · Header keyed y uniforme.** Todos los campos son `key:value`. Para extraer la
+key se corta en el **primer `:`** (así `created:2026-…T10:30:00Z` y `ref:<id>:parent`
+parsean bien aunque el valor tenga `:`). `area` es texto libre → su valor se
+**percent-encodea** al escribir (y se decodea al leer) para que nunca contenga un
+` | ` ni un salto de línea que parta el header.
+
+**D.3 · Body** = todo lo que sigue al header hasta el próximo header válido. Sin
+título (ya cerrado en §1/§2).
+
+**D.4 · Escritura append-only.** Se abre en modo **append** (`O_APPEND`): jamás se
+reabre ni reescribe un bloque viejo, solo se agrega al final. `fsync` tras escribir
+para forzar el guardado a disco.
+
+**D.5 · Tolerancia a escritura a medias.** Si se corta a la mitad de escribir la
+última tarjeta (corte de luz, crash), al leer el **último bloque inválido se
+descarta** en silencio en vez de explotar. Solo puede pasar al final (append-only),
+así que nunca afecta tarjetas previas. *(Confirmado: "si queda mal escrito, nos
+deshacemos de él".)*
+
+**D.6 · Unicidad por `id` v7.** No hay dos tarjetas con el mismo id. Si por edición
+manual aparecieran duplicados, gana el primero y se avisa.
+
+**D.7 · Índice en memoria.** Al arrancar se lee el archivo una vez y se arma un mapa
+`id → Card`; de ahí se **derivan** backlinks e hijas (`ref kind=parent` entrantes).
+No se persiste nada derivado — se recalcula leyendo el store.
+
+Cosmético (no afecta el parseo): podemos seguir escribiendo un `---` en blanco entre
+bloques solo por legibilidad; el parser lo ignora (la autoridad es el header).
 
 ---
 
@@ -224,8 +279,14 @@ Refinamos el alcance de cada fase a medida que cerramos §1–§4.
 | 2026-06-02 | Nuevos type `note` (default) y `rem` | CERRADO |
 | 2026-06-02 | `ref` = link NEUTRO (sin update/reply); backlinks derivados | CERRADO |
 | 2026-06-02 | Sin migración: el modelo inline viejo se elimina (Fase 0) | CERRADO |
-| 2026-06-02 | Entrada rápida: `tags : título`, Enter → body | CERRADO |
-| 2026-06-02 | Tarjeta = `title` (1 línea) + `body` opcional (markdown) | CERRADO |
+| 2026-06-02 | ~~Entrada rápida: `tags : título`, Enter → body~~ → revertido | OBSOLETO |
+| 2026-06-02 | ~~Tarjeta = `title` + `body`~~ → revertido: solo `body`, id = identidad | OBSOLETO |
+| 2026-06-02 | Sin `title`: tarjeta = solo `body`; el "título" es el `id` | CERRADO |
+| 2026-06-02 | Entrada rápida: `tags : body`; Enter crea, Shift+Enter = newline | CERRADO |
+| 2026-06-02 | Anidado = `ref kind=parent` (mismo mecanismo, no campo nuevo) | CERRADO |
+| 2026-06-02 | D: parseo anclado a `> CARD` + validación por keys conocidas | CERRADO |
+| 2026-06-02 | D: header 100% keyed (`created:` incluido), area percent-encoded | CERRADO |
+| 2026-06-02 | D: append-only (`O_APPEND`+`fsync`); bloque final corrupto se descarta | CERRADO |
 | 2026-06-02 | Conflicto en eje de 1 valor = error duro (no crea) | CERRADO |
 | 2026-06-02 | Heurística token→eje + autocompletar fuzzy; area = libre/última palabra | CERRADO |
 | 2026-06-02 | Todo inmutable incl. `area` → timeline append-only puro | CERRADO |
