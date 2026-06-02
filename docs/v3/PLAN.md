@@ -19,9 +19,9 @@ noteit deja de tratar las tarjetas como texto inline y pasa a tratarlas como una
 
 La referencia de modelo es `/docker/wheel-journal` (entries inmutables,
 append-only, en markdown legible; "comentarios" como objetos separados que
-referencian un entry). Tomamos eso y le sumamos: **tags**, **threading por
-referencia** (responder/actualizar = nueva tarjeta linkeada) y **embeds** en
-archivos de texto.
+referencian un entry). Tomamos eso y le sumamos: **tags**, **links entre tarjetas**
+(una tarjeta nueva referencia a otra; backlinks visibles) y **embeds** en archivos
+de texto.
 
 Principio que se hereda de wheel-journal y del `card.go` actual: **el dato vive
 como markdown legible**. Si la app muere, abrís el archivo y lo leés.
@@ -38,7 +38,7 @@ Card {
   created   // timestamp RFC3339Nano — posición LEGIBLE en la timeline
   body      // markdown, inmutable
   tags {}   // 6 ejes controlados → ver docs/v3/taxonomy.md
-  ref?      // UNA referencia (o ninguna): { type: reply|update, target: id }
+  ref?      // UNA referencia (o ninguna) a otra tarjeta por id. LINK NEUTRO.
 }
 ```
 
@@ -57,20 +57,27 @@ siempre están materializados (defaults `note` / `todo`); el resto solo si se se
   que guardamos un RFC3339(Nano) explícito como el "cuándo" semántico. Se generan
   juntos en el mismo instante → nunca se contradicen. (id = identificador + orden
   grueso; created = tiempo legible y de precisión fina.)
-- **Tipos de `ref`: solo `reply` y `update`.** Sin `link` genérico por ahora.
-- **Cardinalidad de `ref`: UNA sola** (hilos = cadenas limpias A ← B ← C).
-  Decisión barata de revertir: la lógica de refs se modela **abstracta y
-  desacoplada** (la cardinalidad vive en UN punto), así pasar a N refs después
-  es cambiar config, no reescribir. Ningún lado del código depende del otro.
+- **`ref` es un LINK NEUTRO, sin semántica.** Por ahora NO hay `update` ni
+  `reply` con comportamiento: una `ref` solo dice "esta tarjeta apunta a aquella".
+  Nada de lógica de "supersede" ni estado derivado. El campo de tipo queda
+  **reservado** para sumar `reply`/`update` después sin tocar el storage.
+- **Cardinalidad de `ref`: UNA sola** por ahora. Decisión barata de revertir: la
+  lógica de refs se modela **abstracta y desacoplada** (cardinalidad y tipo viven
+  en UN punto), así pasar a N refs o a refs tipadas después es cambiar config, no
+  reescribir. Ningún lado del código depende del otro.
+- **Backlinks visibles (bidireccional).** Una tarjeta guarda solo su `ref` saliente
+  (a quién apunta). Los **backlinks** (quién la apunta) se **derivan** recorriendo
+  el store — no se guardan en la tarjeta apuntada (sería mutarla, y es inmutable).
+  Al abrir A: ves su texto + "linkeada desde B" (entrante) y "apunta a X" (saliente).
 - **Taxonomía data-driven.** Los valores/sinónimos de tags NO se hardcodean por
   eje; el normalizador lee el diccionario (`taxonomy.md`). Agregar un valor = dato.
 
 **Reglas:**
 - Una tarjeta **nunca** se edita ni se borra. Es inmutable de por vida.
-- "Actualizar" una tarjeta = crear **otra** tarjeta con `ref:update → id`.
-- "Responder/comentar" = crear **otra** tarjeta con `ref:reply → id`.
-- El hilo de conversación se **reconstruye** siguiendo las `refs`. Las tarjetas
-  no están anidadas; son objetos separados que se linkean.
+- Relacionar tarjetas = crear **otra** tarjeta con una `ref` que apunta a la
+  primera. Son objetos separados que se linkean; nunca anidados.
+- El grafo se **reconstruye** siguiendo las `ref` (salientes) y derivando los
+  backlinks (entrantes) al recorrer el store.
 - `created` (+ el id v7) es único → no hay dos tarjetas en el mismo instante.
 
 **Modelo de tags** → cerrado en `docs/v3/taxonomy.md` (6 ejes, 33 canónicos,
@@ -91,15 +98,15 @@ Un único markdown legible, append-only: **`.noteit/timeline.md`**.
 Cada tarjeta es un bloque estilo wheel-journal, separado por `---`:
 
 ```
-> CARD | id:<uuid-v7> | <created-rfc3339> | type:feat | status:doing | priority:p1 | horizon:next | area:client,backend | effort:m | ref:reply:<id>
+> CARD | id:<uuid-v7> | <created-rfc3339> | type:feat | status:doing | priority:p1 | horizon:next | area:client,backend | effort:m | ref:<id>
 
 <body markdown, puede tener varias líneas e imágenes>
 ```
 
 Cada eje es su propio token `key:value` (legible, auto-etiquetado). `area` multi =
 coma-separado. Se omiten los ejes ausentes; `type`/`status` siempre presentes.
-`ref` (uno solo) se omite si no hay. Sin `author` — single-user. (Formato exacto
-a confirmar cuando escribamos el parser, pero esta es la forma.)
+`ref` (un solo id, link neutro) se omite si no hay. Sin `author` — single-user.
+(Formato exacto a confirmar cuando escribamos el parser, pero esta es la forma.)
 
 - Append-only a nivel lógico: nunca se reescribe ni se reordena un bloque
   existente (igual que wheel: el server solo agrega al final).
@@ -148,10 +155,13 @@ Se detalla cuando lleguemos. Reusa el editor CodeMirror que ya existe.
 
 ## 5. Plan por fases  **[ABIERTO — a refinar]**
 
+- **Fase 0 — limpieza:** sacar el modelo inline viejo (`:::card` en `card.go`,
+  `parseBlocks`, `journal.go`, `SaveBody` card-aware, `cardPreview` en el editor).
+  No hay data importante que migrar → se elimina, no coexiste.
 - **Fase 1 — backend de entidades:** modelo `Card` + store `.noteit/timeline.md`
-  append-only + servicio (`CreateCard`, `ListCards`). Inmutable, timestamp único.
-- **Fase 2 — UI timeline:** feed + composer rápido + tags + responder/actualizar
-  (nueva tarjeta linkeada) + filtro por tag.
+  append-only + servicio (`CreateCard`, `ListCards`). Inmutable, id único.
+- **Fase 2 — UI timeline:** feed + composer rápido + tags + linkear (nueva tarjeta
+  con `ref`) + backlinks visibles + filtro por tag.
 - **Fase 3 — embeds:** token `!card[uuid]` en archivos de texto, render read-only.
 
 Refinamos el alcance de cada fase a medida que cerramos §1–§4.
@@ -168,6 +178,8 @@ Refinamos el alcance de cada fase a medida que cerramos §1–§4.
 | 2026-06-01 | Prioridad: tarjetas primero, texto/embeds al final | CERRADO |
 | 2026-06-02 | Sin `author` por tarjeta (single-user, dueño implícito) | CERRADO |
 | 2026-06-02 | `id` = uuid v7; `created` RFC3339Nano explícito aparte | CERRADO |
-| 2026-06-02 | `ref` única (reply/update), lógica abstracta y desacoplada | CERRADO |
+| 2026-06-02 | `ref` única, lógica abstracta y desacoplada | CERRADO |
 | 2026-06-02 | Tags: 6 ejes controlados, data-driven (taxonomy.md) | CERRADO |
 | 2026-06-02 | Nuevos type `note` (default) y `rem` | CERRADO |
+| 2026-06-02 | `ref` = link NEUTRO (sin update/reply); backlinks derivados | CERRADO |
+| 2026-06-02 | Sin migración: el modelo inline viejo se elimina (Fase 0) | CERRADO |
