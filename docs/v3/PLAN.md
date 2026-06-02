@@ -28,20 +28,42 @@ como markdown legible**. Si la app muere, abrís el archivo y lo leés.
 
 ---
 
-## 1. La entidad Card  **[ABIERTO — a discutir]**
+## 1. La entidad Card  **[CERRADO]**
 
-Forma propuesta (sujeta a discusión):
+Forma final:
 
 ```
 Card {
-  id        // uuid v7 (ordena por tiempo), inmutable
-  created   // timestamp, ÚNICO, define su posición en la timeline
-  author    // inmutable
+  id        // uuid v7 — ordena por tiempo, inmutable
+  created   // timestamp RFC3339Nano — posición LEGIBLE en la timeline
   body      // markdown, inmutable
-  tags []   // para filtrar y armar timelines por tag
-  refs []   // referencias a otras tarjetas: { type: reply|update, target: id }
+  tags {}   // 6 ejes controlados → ver docs/v3/taxonomy.md
+  ref?      // UNA referencia (o ninguna): { type: reply|update, target: id }
 }
 ```
+
+`tags` es un **mapa por eje** (no una lista plana), según el diccionario:
+`{ type, status, priority?, horizon?, area[], effort? }`. `type` y `status`
+siempre están materializados (defaults `note` / `todo`); el resto solo si se setea.
+
+**Decisiones cerradas:**
+- **Sin `author`.** La app es single-user: el dueño es implícito. Si hace falta
+  mostrarlo, sale UNA vez de la config del vault, nunca por tarjeta. (Multi-autor
+  queda fuera de v3.)
+- **`id` = uuid v7.** Ordena por tiempo, así el id refleja la posición en la
+  timeline y desempata si dos tarjetas cayeran en el mismo milisegundo.
+- **`created` se mantiene aparte** del id. Razón: v7 codifica el tiempo solo a
+  nivel **milisegundo** y no es legible a ojo; el archivo es markdown legible, así
+  que guardamos un RFC3339(Nano) explícito como el "cuándo" semántico. Se generan
+  juntos en el mismo instante → nunca se contradicen. (id = identificador + orden
+  grueso; created = tiempo legible y de precisión fina.)
+- **Tipos de `ref`: solo `reply` y `update`.** Sin `link` genérico por ahora.
+- **Cardinalidad de `ref`: UNA sola** (hilos = cadenas limpias A ← B ← C).
+  Decisión barata de revertir: la lógica de refs se modela **abstracta y
+  desacoplada** (la cardinalidad vive en UN punto), así pasar a N refs después
+  es cambiar config, no reescribir. Ningún lado del código depende del otro.
+- **Taxonomía data-driven.** Los valores/sinónimos de tags NO se hardcodean por
+  eje; el normalizador lee el diccionario (`taxonomy.md`). Agregar un valor = dato.
 
 **Reglas:**
 - Una tarjeta **nunca** se edita ni se borra. Es inmutable de por vida.
@@ -49,14 +71,16 @@ Card {
 - "Responder/comentar" = crear **otra** tarjeta con `ref:reply → id`.
 - El hilo de conversación se **reconstruye** siguiendo las `refs`. Las tarjetas
   no están anidadas; son objetos separados que se linkean.
-- `created` es único → no pueden existir dos tarjetas en el mismo instante.
+- `created` (+ el id v7) es único → no hay dos tarjetas en el mismo instante.
 
-Puntos a resolver en esta sección:
-- ¿`update` y `reply` son los únicos tipos de `ref`, o habrá más (ej. `link`
-  simple sin semántica de hilo)?
-- ¿Una tarjeta puede tener varias `refs` (ej. responder a dos a la vez)?
-- ¿`tags` es lista libre de strings, o un set controlado?
-- ¿El `author` de dónde sale en una app local single-user? (¿config del vault?)
+**Modelo de tags** → cerrado en `docs/v3/taxonomy.md` (6 ejes, 33 canónicos,
+sinónimos, colisiones, normalización lowercase + sin acentos + sinónimo→canónico).
+
+Pendientes menores (no bloquean Fase 1):
+- Confirmar sinónimos propuestos para los nuevos `note` y `rem`.
+- `horizon` ausente: ¿se materializa como `now` al escribir, o se interpreta
+  `now` solo al leer/filtrar? (Propuesta: interpretar al leer; no ensuciar el
+  archivo con defaults.)
 
 ---
 
@@ -67,10 +91,15 @@ Un único markdown legible, append-only: **`.noteit/timeline.md`**.
 Cada tarjeta es un bloque estilo wheel-journal, separado por `---`:
 
 ```
-> CARD | <created-rfc3339> | author=<urlenc> | id:<uuid> | tags:a,b | refs:reply:<id>,update:<id>
+> CARD | id:<uuid-v7> | <created-rfc3339> | type:feat | status:doing | priority:p1 | horizon:next | area:client,backend | effort:m | ref:reply:<id>
 
 <body markdown, puede tener varias líneas e imágenes>
 ```
+
+Cada eje es su propio token `key:value` (legible, auto-etiquetado). `area` multi =
+coma-separado. Se omiten los ejes ausentes; `type`/`status` siempre presentes.
+`ref` (uno solo) se omite si no hay. Sin `author` — single-user. (Formato exacto
+a confirmar cuando escribamos el parser, pero esta es la forma.)
 
 - Append-only a nivel lógico: nunca se reescribe ni se reordena un bloque
   existente (igual que wheel: el server solo agrega al final).
@@ -137,3 +166,8 @@ Refinamos el alcance de cada fase a medida que cerramos §1–§4.
 | 2026-06-01 | Storage Opción A: `.noteit/timeline.md` markdown legible | CERRADO |
 | 2026-06-01 | Inmutabilidad total; update/reply = nueva tarjeta con ref | CERRADO |
 | 2026-06-01 | Prioridad: tarjetas primero, texto/embeds al final | CERRADO |
+| 2026-06-02 | Sin `author` por tarjeta (single-user, dueño implícito) | CERRADO |
+| 2026-06-02 | `id` = uuid v7; `created` RFC3339Nano explícito aparte | CERRADO |
+| 2026-06-02 | `ref` única (reply/update), lógica abstracta y desacoplada | CERRADO |
+| 2026-06-02 | Tags: 6 ejes controlados, data-driven (taxonomy.md) | CERRADO |
+| 2026-06-02 | Nuevos type `note` (default) y `rem` | CERRADO |
