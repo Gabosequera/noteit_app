@@ -144,21 +144,27 @@ diccionario **más cercana** (fuzzy typeahead), para escribir libre y corto.
 
 Un único markdown legible, append-only: **`.noteit/timeline.md`**.
 
-Cada tarjeta es un bloque estilo wheel-journal, separado por `---`:
+Cada tarjeta es un bloque **enmarcado** estilo wheel-journal: header con
+`bytes:N`, body exacto, y footer con id:
 
 ```
-> CARD | id:<uuid-v7> | created:<rfc3339> | type:feat | status:doing | priority:p1 | horizon:next | area:client,backend | effort:m | ref:<id>:parent
-<body markdown — desde la primera línea tras el header; 1+ líneas, imágenes ok>
+> CARD | id:<uuid-v7> | created:<rfc3339> | type:feat | status:doing | priority:p1 | horizon:next | area:client,backend | effort:m | ref:<id>:parent | bytes:<N>
+<body markdown — exactamente N bytes UTF-8; 1+ líneas, imágenes ok>
+> ENDCARD <uuid-v7>
 ```
 
 - **Header** = línea `> CARD | …`. Cada eje es su token `key:value` (legible,
   auto-etiquetado). `area` multi = coma-separado. Se omiten los ejes ausentes;
   `type`/`status` siempre presentes. `ref` se omite si no hay; cuando está, lleva
-  el `kind`: `ref:<id>` (link neutro) o `ref:<id>:parent` (anidado). Sin
-  `author` — single-user.
-- **Body** = todo lo que sigue al header (sin línea de título). No hay título.
-
-(Formato exacto a confirmar cuando escribamos el parser, pero esta es la forma.)
+  el `kind`: `ref:<id>` (link neutro) o `ref:<id>:parent` (anidado). `bytes:<N>`
+  es **obligatorio y siempre va último**: largo exacto del body en bytes UTF-8.
+  Sin `author` — single-user.
+- **Body** = exactamente `N` bytes tras el `\n` del header. Texto markdown
+  arbitrario (puede contener `---`, líneas `>`, `> CARD …`, code fences) — el
+  framing por longitud lo preserva tal cual, **sin escaping**.
+- **Footer** = línea `> ENDCARD <id>` con el **mismo id** del header, precedida de
+  un separador `\n` explícito. Confirma que el bloque se escribió completo y sirve
+  de ancla de re-sync/inspección humana.
 
 - Append-only a nivel lógico: nunca se reescribe ni se reordena un bloque
   existente (igual que wheel: el server solo agrega al final).
@@ -183,10 +189,11 @@ por `---`; eso es markdown válido y aparecería dentro de un body. Se parte por
 línea que empieza con `> CARD`. Pero `> CARD` **no basta**: la línea es un header
 válido solo si sus tokens (separados por ` | `) son **`key:value` con `key` ∈ el
 set de campos que definimos** — `{ id, created, type, status, priority, horizon,
-area, effort, ref }` — y están las **requeridas** (`id`, `created`, `type`,
-`status`). Se validan las **keys**, NUNCA los valores (cada tarjeta trae valores
-distintos). Una línea `> CARD …` que no cumpla esto NO es un header (es body, o un
-bloque corrupto → D.5). Una key desconocida invalida el header.
+area, effort, ref, bytes }` — y están las **requeridas** (`id`, `created`, `type`,
+`status`, `bytes`). Se validan las **keys**, NUNCA los valores (cada tarjeta trae
+valores distintos), salvo `bytes` que debe ser un entero ≥ 0. Una línea `> CARD …`
+que no cumpla esto NO es un header (es body opaco, o un bloque corrupto → D.5). Una
+key desconocida invalida el header.
 
 **D.2 · Header keyed y uniforme.** Todos los campos son `key:value`. Para extraer la
 key se corta en el **primer `:`** (así `created:2026-…T10:30:00Z` y `ref:<id>:parent`
@@ -194,43 +201,52 @@ parsean bien aunque el valor tenga `:`). `area` es texto libre → su valor se
 **percent-encodea** al escribir (y se decodea al leer) para que nunca contenga un
 ` | ` ni un salto de línea que parta el header.
 
-**D.3 · Body** = todo lo que sigue al header hasta el próximo header válido. Sin
-título (ya cerrado en §1/§2).
+**D.3 · Body por longitud (framing), NO por "hasta el próximo header".** El body son
+**exactamente los `N` bytes** que declara `bytes:N` en el header, contados desde el
+`\n` que cierra la línea del header. Esto hace al body **totalmente opaco**: puede
+contener `---`, líneas `>`, `> CARD …`, `> ENDCARD …`, code fences — nada de eso se
+interpreta, porque no se busca un delimitador dentro del body. **Sin escaping**
+(la propuesta de escapar `>` se descartó: no es biyectiva y rompe la semántica de
+blockquote en markdown). Esto **cierra el hueco "header-en-body"**: una línea de body
+que parezca header es inofensiva porque jamás se escanea el body buscando headers.
 
-**D.4 · Escritura append-only.** Se abre en modo **append** (`O_APPEND`): jamás se
-reabre ni reescribe un bloque viejo, solo se agrega al final. `fsync` tras escribir
-para forzar el guardado a disco.
+**D.4 · Footer y completitud (cierra "truncado ≠ completo").** Tras los `N` bytes va
+un separador `\n` explícito (serializado **siempre**, no se depende del newline final
+del body) y la línea `> ENDCARD <id>`. Un bloque está **completo** solo si: header
+válido (D.1) **con** `bytes:N` → leés exactamente `N` bytes → encontrás el separador
+→ la línea siguiente es `> ENDCARD <id>` con el **mismo id**. Si algo de eso falta
+(EOF antes de `N` bytes, sin footer, footer con otro id) el bloque está **torn**.
 
-**D.5 · Tolerancia a escritura a medias.** Si se corta a la mitad de escribir la
-última tarjeta (corte de luz, crash), al leer el **último bloque inválido se
-descarta** en silencio en vez de explotar. Solo puede pasar al final (append-only),
-así que nunca afecta tarjetas previas. *(Confirmado: "si queda mal escrito, nos
-deshacemos de él".)*
+**D.5 · Tolerancia: solo el tail incompleto.** Un bloque torn **solo** puede ser el
+**último** del archivo (append-only). Al arrancar: si el último bloque es torn, se
+**trunca el archivo físicamente** hasta el final del último bloque completo **antes**
+de permitir cualquier append (no se anexa nunca después de un tail roto). Corrupción
+**en medio** del archivo (un bloque inválido que NO es el último) **NO** se descarta:
+es **error explícito** (señal de edición/daño manual), no se arranca en silencio.
 
-**D.6 · Unicidad por `id` v7.** No hay dos tarjetas con el mismo id. Si por edición
+**D.6 · Escritura append-only y durable.** Crear `timeline.md`: `fsync(file)` +
+**`fsync(dir)`** (para persistir la entrada de directorio). Abrir en `O_APPEND`. Cada
+append: serializar el bloque entero (header `\n` + N bytes + `\n` + footer `\n`) en
+**una** `Write`, **verificar que no hubo short write** (una `Write` en archivo regular
+no garantiza escritura completa), `fsync(file)`, y **solo si fsync no falló** se
+actualiza el índice en memoria. Si `fsync` falla, no se confirma éxito. Formato
+canónico **LF**; el body se escribe/lee tal cual (**no** se normaliza CRLF al leer).
+
+**D.7 · Unicidad por `id` v7.** No hay dos tarjetas con el mismo id. Si por edición
 manual aparecieran duplicados, gana el primero y se avisa.
 
-**D.7 · Índice en memoria.** Al arrancar se lee el archivo una vez y se arma un mapa
+**D.8 · Índice en memoria.** Al arrancar se lee el archivo una vez y se arma un mapa
 `id → Card`; de ahí se **derivan** backlinks e hijas (`ref kind=parent` entrantes).
-No se persiste nada derivado — se recalcula leyendo el store.
+Los refs/backlinks se derivan **solo de tarjetas completas**. No se persiste nada
+derivado — se recalcula leyendo el store.
 
-Cosmético (no afecta el parseo): podemos seguir escribiendo un `---` en blanco entre
-bloques solo por legibilidad; el parser lo ignora (la autoridad es el header).
+**D.9 · Checksum:** opcional, descartado por ahora. `bytes:N` + footer detectan
+truncamiento; un checksum solo agregaría detección de corrupción *silenciosa* en
+medio (bit-rot), que para un archivo local single-user no justifica el costo. Slot
+reservable en el header (`sha:`) si algún día se quiere.
 
-**Riesgos abiertos (a resolver al escribir el store en Fase 1 — los marcó Codex):**
-- **Truncado válido ≠ completo.** D.5 descarta el último bloque solo si es
-  *inválido*; pero un bloque truncado cuyo header + fragmento de body siguen siendo
-  sintácticamente válidos es indistinguible de uno completo (cualquier texto es body
-  válido). Para detectar truncado real hace falta *framing de completitud*: un footer
-  marcador, longitud, o checksum por bloque. Decidir el mecanismo al serializar.
-- **Línea de body que parece header.** Una línea dentro del body con la forma exacta
-  `> CARD | id:.. | created:.. | type:.. | status:..` (keys válidas) se parsearía como
-  tarjeta nueva. La validación por keys baja el riesgo pero no lo elimina. Al
-  serializar, **escapar/neutralizar** cualquier línea del body que empiece con
-  `> CARD ` (p. ej. prefijo de continuación) o reservar esa forma.
-- **Durabilidad fina:** `O_APPEND`+`fsync` no cubre multi-proceso ni la creación del
-  archivo. Una sola `Write` por bloque; `fsync` del directorio al crear `timeline.md`;
-  evaluar lock si soportamos varias instancias (hoy single-user → bajo).
+Cosmético (no afecta el parseo): el footer `> ENDCARD <id>` ya separa visualmente los
+bloques; no hace falta un `---` extra. La autoridad del parseo es header+`bytes`+footer.
 
 ---
 
@@ -306,7 +322,10 @@ Refinamos el alcance de cada fase a medida que cerramos §1–§4.
 | 2026-06-02 | D: header 100% keyed (`created:` incluido), area percent-encoded | CERRADO |
 | 2026-06-02 | D: append-only (`O_APPEND`+`fsync`); bloque final corrupto se descarta | CERRADO |
 | 2026-06-02 | Fase 0 ejecutada (frontend b052c82 + backend 41bc9f5), build verde | HECHO |
-| 2026-06-02 | D: framing de completitud + escape de header-en-body → abierto Fase 1 | ABIERTO |
+| 2026-06-02 | ~~D: framing de completitud + escape de header-en-body~~ → resuelto | OBSOLETO |
+| 2026-06-02 | D: framing por `bytes:N` en header + footer `> ENDCARD <id>`, sin escaping | CERRADO |
+| 2026-06-02 | D: corrupción en medio = error explícito; solo tail torn se trunca | CERRADO |
+| 2026-06-02 | D: durabilidad fsync(file)+fsync(dir) al crear; write→fsync→índice por append | CERRADO |
 | 2026-06-02 | Conflicto en eje de 1 valor = error duro (no crea) | CERRADO |
 | 2026-06-02 | Heurística token→eje + autocompletar fuzzy; area = libre/última palabra | CERRADO |
 | 2026-06-02 | Todo inmutable incl. `area` → timeline append-only puro | CERRADO |
