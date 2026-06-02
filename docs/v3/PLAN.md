@@ -217,6 +217,21 @@ No se persiste nada derivado — se recalcula leyendo el store.
 Cosmético (no afecta el parseo): podemos seguir escribiendo un `---` en blanco entre
 bloques solo por legibilidad; el parser lo ignora (la autoridad es el header).
 
+**Riesgos abiertos (a resolver al escribir el store en Fase 1 — los marcó Codex):**
+- **Truncado válido ≠ completo.** D.5 descarta el último bloque solo si es
+  *inválido*; pero un bloque truncado cuyo header + fragmento de body siguen siendo
+  sintácticamente válidos es indistinguible de uno completo (cualquier texto es body
+  válido). Para detectar truncado real hace falta *framing de completitud*: un footer
+  marcador, longitud, o checksum por bloque. Decidir el mecanismo al serializar.
+- **Línea de body que parece header.** Una línea dentro del body con la forma exacta
+  `> CARD | id:.. | created:.. | type:.. | status:..` (keys válidas) se parsearía como
+  tarjeta nueva. La validación por keys baja el riesgo pero no lo elimina. Al
+  serializar, **escapar/neutralizar** cualquier línea del body que empiece con
+  `> CARD ` (p. ej. prefijo de continuación) o reservar esa forma.
+- **Durabilidad fina:** `O_APPEND`+`fsync` no cubre multi-proceso ni la creación del
+  archivo. Una sola `Write` por bloque; `fsync` del directorio al crear `timeline.md`;
+  evaluar lock si soportamos varias instancias (hoy single-user → bajo).
+
 ---
 
 ## 3. Vistas  **[ABIERTO — a discutir]**
@@ -251,9 +266,12 @@ Se detalla cuando lleguemos. Reusa el editor CodeMirror que ya existe.
 
 ## 5. Plan por fases  **[ABIERTO — a refinar]**
 
-- **Fase 0 — limpieza:** sacar el modelo inline viejo (`:::card` en `card.go`,
-  `parseBlocks`, `journal.go`, `SaveBody` card-aware, `cardPreview` en el editor).
-  No hay data importante que migrar → se elimina, no coexiste.
+- **Fase 0 — limpieza: [HECHO]** sacado el modelo inline viejo. Frontend
+  (commit `b052c82`): borrado `editor/cards.ts`/`cardPreview`, compositor note-only,
+  CSS muerto. Backend (commit `41bc9f5`): borrados `card.go`/`cardservice.go`/
+  `journal.go`/`card_test.go`, bindings regeneradas note-only, shim `backend.ts`
+  eliminado. Fences `:::card` viejos quedan como texto legacy; `journal.ndjson`
+  huérfano no se borra. Build verde (`go build -tags gtk3` + tsc + vite).
 - **Fase 1 — backend de entidades:** modelo `Card` + store `.noteit/timeline.md`
   append-only + servicio (`CreateCard`, `ListCards`). Inmutable, id único.
 - **Fase 2 — UI timeline:** feed + composer rápido + tags + linkear (nueva tarjeta
@@ -287,6 +305,8 @@ Refinamos el alcance de cada fase a medida que cerramos §1–§4.
 | 2026-06-02 | D: parseo anclado a `> CARD` + validación por keys conocidas | CERRADO |
 | 2026-06-02 | D: header 100% keyed (`created:` incluido), area percent-encoded | CERRADO |
 | 2026-06-02 | D: append-only (`O_APPEND`+`fsync`); bloque final corrupto se descarta | CERRADO |
+| 2026-06-02 | Fase 0 ejecutada (frontend b052c82 + backend 41bc9f5), build verde | HECHO |
+| 2026-06-02 | D: framing de completitud + escape de header-en-body → abierto Fase 1 | ABIERTO |
 | 2026-06-02 | Conflicto en eje de 1 valor = error duro (no crea) | CERRADO |
 | 2026-06-02 | Heurística token→eje + autocompletar fuzzy; area = libre/última palabra | CERRADO |
 | 2026-06-02 | Todo inmutable incl. `area` → timeline append-only puro | CERRADO |
