@@ -36,7 +36,8 @@ Forma final:
 Card {
   id        // uuid v7 — ordena por tiempo, inmutable
   created   // timestamp RFC3339Nano — posición LEGIBLE en la timeline
-  body      // markdown, inmutable
+  title     // UNA línea — el "qué" rápido (lo que va después del `:`)
+  body      // markdown multilínea, OPCIONAL (se escribe tras el Enter)
   tags {}   // 6 ejes controlados → ver docs/v3/taxonomy.md
   ref?      // UNA referencia (o ninguna) a otra tarjeta por id. LINK NEUTRO.
 }
@@ -83,11 +84,46 @@ siempre están materializados (defaults `note` / `todo`); el resto solo si se se
 **Modelo de tags** → cerrado en `docs/v3/taxonomy.md` (6 ejes, 33 canónicos,
 sinónimos, colisiones, normalización lowercase + sin acentos + sinónimo→canónico).
 
-Pendientes menores (no bloquean Fase 1):
-- Confirmar sinónimos propuestos para los nuevos `note` y `rem`.
-- `horizon` ausente: ¿se materializa como `now` al escribir, o se interpreta
-  `now` solo al leer/filtrar? (Propuesta: interpretar al leer; no ensuciar el
-  archivo con defaults.)
+Pendiente menor (no bloquea Fase 1):
+- Confirmar sinónimos propuestos para los nuevos `note` y `rem` (en taxonomy.md).
+
+---
+
+## 1·B. Entrada rápida (quick-entry)  **[CERRADO]**
+
+Crear una tarjeta es UNA línea + el cuerpo:
+
+```
+‹tags…› : ‹título›      —Enter→      ‹body markdown (opcional)›
+```
+
+- **Antes del `:`** = tags (palabras sueltas, **orden libre**).
+- **Después del `:`** = el **título** (una sola línea).
+- **Enter** confirma el título y abre el **body** (markdown, multilínea, opcional).
+
+**Normalización (heurística pura, por token):** `lowercase` → quitar acentos →
+buscar en el diccionario (`taxonomy.md`) → `(eje, canónico)`. El programa corta
+las palabras y asigna cada una a su eje; no hay orden fijo.
+
+**Autocompletar:** mientras se teclea un token, predecir/sugerir la palabra del
+diccionario **más cercana** (fuzzy typeahead), para escribir libre y corto.
+
+**Reglas de asignación:**
+- Token reconocido → su eje canónico.
+- **Conflicto en eje de 1 valor** (ej. `feat fix` = dos `type`) → **ERROR DURO**:
+  no se crea la tarjeta, sin override posible.
+- **`area` = eje libre** ("lo que sea"): es la **última palabra antes del `:`**;
+  si no se reconoce, se asigna a `area` como valor libre. (area sigue siendo
+  multi para sus valores canónicos del diccionario.)
+- **Token desconocido** que NO es el slot de area → **aviso** ("no conozco 'X'"),
+  no se manda al body, **bloquea** la creación con una noti. Si el user da
+  **Enter de nuevo** (confirma) → se **quita** ese token y se crea **sin** ese tag.
+- **Defaults:** `type→note`, `status→todo`. `horizon` ausente = `now` (al leer;
+  no se materializa en el archivo).
+
+**Inmutabilidad:** TODO es inmutable una vez creada la tarjeta — **incluida
+`area`**. No hay edición post-creación de ningún campo. Esto mantiene el
+`timeline.md` **append-only puro** (jamás se reescribe un bloque).
 
 ---
 
@@ -99,13 +135,18 @@ Cada tarjeta es un bloque estilo wheel-journal, separado por `---`:
 
 ```
 > CARD | id:<uuid-v7> | <created-rfc3339> | type:feat | status:doing | priority:p1 | horizon:next | area:client,backend | effort:m | ref:<id>
+<título — primera línea tras el header>
 
-<body markdown, puede tener varias líneas e imágenes>
+<body markdown opcional, puede tener varias líneas e imágenes>
 ```
 
-Cada eje es su propio token `key:value` (legible, auto-etiquetado). `area` multi =
-coma-separado. Se omiten los ejes ausentes; `type`/`status` siempre presentes.
-`ref` (un solo id, link neutro) se omite si no hay. Sin `author` — single-user.
+- **Header** = línea `> CARD | …`. Cada eje es su token `key:value` (legible,
+  auto-etiquetado). `area` multi = coma-separado. Se omiten los ejes ausentes;
+  `type`/`status` siempre presentes. `ref` (un solo id, link neutro) se omite si
+  no hay. Sin `author` — single-user.
+- **Título** = primera línea no vacía después del header.
+- **Body** = todo lo que sigue tras una línea en blanco (opcional).
+
 (Formato exacto a confirmar cuando escribamos el parser, pero esta es la forma.)
 
 - Append-only a nivel lógico: nunca se reescribe ni se reordena un bloque
@@ -183,3 +224,8 @@ Refinamos el alcance de cada fase a medida que cerramos §1–§4.
 | 2026-06-02 | Nuevos type `note` (default) y `rem` | CERRADO |
 | 2026-06-02 | `ref` = link NEUTRO (sin update/reply); backlinks derivados | CERRADO |
 | 2026-06-02 | Sin migración: el modelo inline viejo se elimina (Fase 0) | CERRADO |
+| 2026-06-02 | Entrada rápida: `tags : título`, Enter → body | CERRADO |
+| 2026-06-02 | Tarjeta = `title` (1 línea) + `body` opcional (markdown) | CERRADO |
+| 2026-06-02 | Conflicto en eje de 1 valor = error duro (no crea) | CERRADO |
+| 2026-06-02 | Heurística token→eje + autocompletar fuzzy; area = libre/última palabra | CERRADO |
+| 2026-06-02 | Todo inmutable incl. `area` → timeline append-only puro | CERRADO |
