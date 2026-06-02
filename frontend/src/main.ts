@@ -103,7 +103,6 @@ let baseFolder = "devlog";
    the Keymap; the command implementations below read/mutate this state. */
 let scope: Scope = COMPOSE;       // focused pane; COMPOSE = bottom composer
 let prevScope: Scope = DOCUMENT;  // scope to restore from a transient LEADER
-let composeIntent: "card" | "note" = "card"; // what Enter in the composer creates
 let leaderActive = false;                    // true while a leader key sequence is being captured
 let leaderSeq: string[] = [];                // chords pressed after the leader key (shown in the statusline)
 let statusTimer: number | undefined;         // clears a transient showcmd notice
@@ -126,29 +125,16 @@ let pendingBody: string | null = null;       // latest unsaved body text (null =
 
 const escHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-/* With a note open, the composer always writes a status card on Enter. The `:**`
-   marker (and the `space space` shortcut that expands to it) is an explicit, muscle-
-   memory way to start one; it is purely a prefix we strip from the body before
-   sending, not a behavioral switch. stripCardPrefix removes it if present. */
-const CARD_PREFIX = ":**";
-function stripCardPrefix(s: string): string {
-    const t = s.replace(/^\s+/, "");
-    if (t.startsWith(CARD_PREFIX)) return t.slice(CARD_PREFIX.length).replace(/^\s+/, "");
-    return s;
-}
-
-/* bodyPreview builds the one-line sidebar snippet. Card fences (`:::card …` and
-   the bare `:::` close) are dropped so the list shows readable prose/status text,
-   never raw fence syntax. */
+/* bodyPreview builds the one-line sidebar snippet: collapse the body to a single
+   line and strip markdown punctuation so the list shows readable text. */
 function bodyPreview(body: string): string {
-    const cleaned = (body ?? "")
+    return (body ?? "")
         .split("\n")
-        .filter((l) => {
-            const t = l.replace(/\r$/, "").trimStart();   // tolerate indented fences
-            return !t.startsWith(":::card") && t !== ":::";
-        })
-        .join(" ");
-    return cleaned.replace(/[#>*`\-]/g, "").replace(/\s+/g, " ").trim().slice(0, 60);
+        .join(" ")
+        .replace(/[#>*`\-]/g, "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 60);
 }
 
 /* ───────────────────────── Derived data ───────────────────────── */
@@ -466,43 +452,6 @@ async function createNoteFromStatement(st: ParsedStatement) {
     }
 }
 
-/* addCardToActive appends a status card to the currently open note. The returned
-   Document already carries the freshly-parsed blocks, so we adopt it directly
-   instead of issuing a second GetDocument round-trip — keeping the write path
-   lightning-fast. The note's raw body is patched in place so the sidebar preview
-   and any markdown fallback stay consistent without a full reload. */
-async function addCardToActive(body: string) {
-    const list = visibleNotes();
-    if (list.length === 0) { notify("no hay nota activa para una tarjeta"); return; }
-    const text = body.trim();
-    if (!text || creating) return;
-    const id = list[active].id;
-    creating = true;
-    try {
-        // The editor owns the live body; flush any pending whole-body save BEFORE
-        // AddCard appends its fence, so the card lands on top of the latest text and
-        // a stale editor save can't clobber the new card afterwards.
-        await flushBodySave();
-        const doc = await NoteService.AddCard(id, text);
-        const newBody = doc.note?.body ?? "";
-        const idx = NOTES.findIndex((n) => n.id === id);
-        if (idx >= 0) NOTES[idx].body = newBody;
-        cmdInput.value = "";
-        updateBarCaret();
-        renderSidebar();
-        renderDetail();
-        // Push the canonical body (now including the new card fence) into the editor.
-        // setDoc is a no-op when unchanged and suppresses onChange, so this can't loop.
-        if (editor && editorNoteId === id) editor.setDoc(newBody);
-        notify("✓ tarjeta de estatus");
-    } catch (err) {
-        console.error("AddCard failed", err);
-        notify("no se pudo crear la tarjeta");
-    } finally {
-        creating = false;
-    }
-}
-
 async function addAnchorToActive(file: string, lines: string) {
     const list = visibleNotes();
     if (list.length === 0) { notify("no hay nota activa para anclar"); return; }
@@ -677,11 +626,6 @@ function setScope(next: Scope) {
         cmdbar.classList.toggle("normal", vimMode !== "insert");
     }
 
-    // Entering the composer always defaults to writing a status card; the
-    // "create a note" intent is a deliberate one-shot set AFTER this by
-    // focusCompose, and reset on submit — so it can never leak across navigation.
-    if (next === COMPOSE) composeIntent = "card";
-
     if (next !== LEADER) closeLeader();
 
     applyScopeClasses();
@@ -761,19 +705,13 @@ function escapeScope() {
 }
 
 function focusCompose() {
-    setScope(COMPOSE);       // resets intent to "card"…
-    composeIntent = "note";  // …then mark this one-shot as a note-create.
+    setScope(COMPOSE);
 }
 
-/* Compose submit (Enter in the composer). With a note open it writes a status
-   card; with no notes yet it bootstraps the first note from the typed title. */
+/* Compose submit (Enter in the composer): always bootstraps a note from the typed
+   title. (Cards are no longer created here — the v3 card composer is separate.) */
 function submitCompose() {
-    if (composeIntent === "note" || visibleNotes().length === 0) {
-        void createNoteFromInput();
-    } else {
-        void addCardToActive(stripCardPrefix(cmdInput.value));
-    }
-    composeIntent = "card";
+    void createNoteFromInput();
 }
 
 /* ───────────────────────── Leader (inline showcmd) ─────────────────────────
@@ -860,7 +798,6 @@ const cmds: { id: string; title: string; run: () => void | Promise<void> }[] = [
     { id: "cmdline.open", title: "Línea de comandos", run: () => cmdline.show() },
     { id: "compose.submit", title: "Enviar compositor", run: () => submitCompose() },
     { id: "note.create", title: "Nueva nota", run: () => { closeLeader(); focusCompose(); } },
-    { id: "card.create", title: "Nueva tarjeta", run: () => { closeLeader(); composeIntent = "card"; setScope(COMPOSE); } },
     { id: "sidebar.top", title: "Inicio de la lista", run: () => { active = 0; render(); renderScopeCursor(); } },
     { id: "sidebar.bottom", title: "Fin de la lista", run: () => { active = Math.max(0, visibleNotes().length - 1); render(); renderScopeCursor(); } },
 ];
@@ -877,13 +814,11 @@ const dispatcher = new InputDispatcher(keymap, registry, () => scope);
 /* Back-compat shim: legacy callers (toolbar +, setView) used setMode("insert")
    to mean "focus the composer to start a note". Map it onto the scope machine. */
 function setMode(next: "insert" | "normal") {
-    // focusCompose() sets the one-shot "note" intent AFTER entering COMPOSE,
-    // so it survives setScope's reset-to-"card" on COMPOSE entry.
     if (next === "insert") focusCompose();
     else setScope(prevScope === COMPOSE ? DOCUMENT : prevScope);
 }
 
-/* Composer caret mirror only (no more space-space → :** expansion). */
+/* Composer caret mirror. */
 cmdInput.addEventListener("input", updateBarCaret);
 
 /* ───────────────────────── Document pane interaction ─────────────────────────

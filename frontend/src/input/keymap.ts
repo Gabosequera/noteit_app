@@ -146,6 +146,5 @@ export const DEFAULT_KEYMAP: Binding[] = [
 
   // Leader sub-keys (active while LEADER scope is pending).
   { keys: "n", scope: "leader", command: "note.create" },
-  { keys: "c", scope: "leader", command: "card.create" },
   { keys: "escape", scope: "leader", command: "scope.escape" },
 ];

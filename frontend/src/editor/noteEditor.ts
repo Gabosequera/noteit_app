@@ -17,7 +17,6 @@ import { markdown } from "@codemirror/lang-markdown";
 import { syntaxHighlighting, HighlightStyle, indentOnInput } from "@codemirror/language";
 import { tags as t } from "@lezer/highlight";
 import { vim, getCM } from "@replit/codemirror-vim";
-import { cardPreview } from "./cards.js";
 
 /** Vim modes surfaced to the app statusline. */
 export type VimMode = "normal" | "insert" | "visual" | "replace" | "visual-line" | "visual-block";
@@ -136,7 +135,6 @@ export class NoteEditor {
             indentOnInput(),
             markdown(),
             syntaxHighlighting(noteitHighlight),
-            cardPreview, // render inline :::card fences as live-preview widgets
             EditorView.lineWrapping, // prose wraps like Obsidian
             noteitTheme,
             keymap.of([...defaultKeymap, ...historyKeymap]),
