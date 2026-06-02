@@ -253,8 +253,7 @@ func (s *NoteService) GetNote(id string) (Note, error) {
 
 // SaveBody overwrites a note's entire Markdown body with `body` and rewrites it
 // to disk, bumping Updated. This is the Obsidian-style raw-text save path: the
-// editor owns the whole document (prose AND inline card fences) as plain text,
-// so there is no block diffing and no journaling here — it simply replaces the
+// editor owns the whole document as plain text, so it simply replaces the
 // "present" body. The note's frontmatter (title, tags, status, anchors, …) is
 // preserved by re-rendering the parsed note with only Body/Updated changed. The
 // id is validated and the write is atomic.

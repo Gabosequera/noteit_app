@@ -1,7 +1,6 @@
 import "./style.css";
 import { Cmdline } from "./cmdline.js";
 import { NoteService, Note, NewNote, Anchor } from "../bindings/github.com/Gabosequera/noteit_app/index.js";
-import { SaveBody } from "./backend.js";
 import { NoteEditor, type VimMode } from "./editor/noteEditor.js";
 import { tagColor, type ParsedStatement } from "./statement.js";
 import {
@@ -293,7 +292,7 @@ async function flushBodySave() {
     pendingBody = null;
     const token = ++bodySaveReq;
     try {
-        const note = await SaveBody(id, body);
+        const note = await NoteService.SaveBody(id, body);
         if (token !== bodySaveReq) return;   // a newer save superseded this one
         // Keep the in-memory note + sidebar preview fresh without disturbing the
         // editor (which already holds the authoritative live text).
