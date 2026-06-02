@@ -52,6 +52,130 @@ export class Anchor {
 }
 
 /**
+ * Card is the in-memory shape of a timeline entry. It is immutable once created.
+ */
+export class Card {
+    /**
+     * uuid v7 — identity and coarse time order
+     */
+    "id": string;
+
+    /**
+     * RFC3339Nano — human-readable timestamp
+     */
+    "created": time$0.Time;
+
+    /**
+     * markdown, opaque; the "what". No title.
+     */
+    "body": string;
+
+    /**
+     * 6 controlled axes (taxonomy.md)
+     */
+    "tags": Tags;
+    "ref"?: Ref | null;
+
+    /**
+     * Derived fields — NOT stored on disk; filled by the service on read.
+     * ids that ref this card with kind=link
+     */
+    "backlinks"?: string[];
+
+    /**
+     * ids that ref this card with kind=parent
+     */
+    "children"?: string[];
+
+    /** Creates a new Card instance. */
+    constructor($$source: Partial<Card> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("created" in $$source)) {
+            this["created"] = null;
+        }
+        if (!("body" in $$source)) {
+            this["body"] = "";
+        }
+        if (!("tags" in $$source)) {
+            this["tags"] = (new Tags());
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new Card instance from a string or object.
+     */
+    static createFrom($$source: any = {}): Card {
+        const $$createField3_0 = $$createType0;
+        const $$createField4_0 = $$createType2;
+        const $$createField5_0 = $$createType3;
+        const $$createField6_0 = $$createType3;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("tags" in $$parsedSource) {
+            $$parsedSource["tags"] = $$createField3_0($$parsedSource["tags"]);
+        }
+        if ("ref" in $$parsedSource) {
+            $$parsedSource["ref"] = $$createField4_0($$parsedSource["ref"]);
+        }
+        if ("backlinks" in $$parsedSource) {
+            $$parsedSource["backlinks"] = $$createField5_0($$parsedSource["backlinks"]);
+        }
+        if ("children" in $$parsedSource) {
+            $$parsedSource["children"] = $$createField6_0($$parsedSource["children"]);
+        }
+        return new Card($$parsedSource as Partial<Card>);
+    }
+}
+
+/**
+ * CardFilter narrows ListCards. Empty fields are ignored. Area matches if the card
+ * has the given area among its values.
+ */
+export class CardFilter {
+    "type": string;
+    "status": string;
+    "priority": string;
+    "horizon": string;
+    "effort": string;
+    "area": string;
+
+    /** Creates a new CardFilter instance. */
+    constructor($$source: Partial<CardFilter> = {}) {
+        if (!("type" in $$source)) {
+            this["type"] = "";
+        }
+        if (!("status" in $$source)) {
+            this["status"] = "";
+        }
+        if (!("priority" in $$source)) {
+            this["priority"] = "";
+        }
+        if (!("horizon" in $$source)) {
+            this["horizon"] = "";
+        }
+        if (!("effort" in $$source)) {
+            this["effort"] = "";
+        }
+        if (!("area" in $$source)) {
+            this["area"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CardFilter instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CardFilter {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new CardFilter($$parsedSource as Partial<CardFilter>);
+    }
+}
+
+/**
  * DirEntry is one item in the cmdline file finder.
  */
 export class DirEntry {
@@ -76,6 +200,52 @@ export class DirEntry {
     static createFrom($$source: any = {}): DirEntry {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new DirEntry($$parsedSource as Partial<DirEntry>);
+    }
+}
+
+/**
+ * NewCard is the structured input for CreateCard. Tags are raw, order-preserving
+ * tokens (the backend resolves them, PLAN.md §1·B). RefID/RefKind are flat so the
+ * generated bindings stay simple.
+ */
+export class NewCard {
+    "tags": string[];
+    "body": string;
+    "refId": string;
+
+    /**
+     * "" | "link" | "parent"
+     */
+    "refKind": string;
+
+    /** Creates a new NewCard instance. */
+    constructor($$source: Partial<NewCard> = {}) {
+        if (!("tags" in $$source)) {
+            this["tags"] = [];
+        }
+        if (!("body" in $$source)) {
+            this["body"] = "";
+        }
+        if (!("refId" in $$source)) {
+            this["refId"] = "";
+        }
+        if (!("refKind" in $$source)) {
+            this["refKind"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new NewCard instance from a string or object.
+     */
+    static createFrom($$source: any = {}): NewCard {
+        const $$createField0_0 = $$createType3;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("tags" in $$parsedSource) {
+            $$parsedSource["tags"] = $$createField0_0($$parsedSource["tags"]);
+        }
+        return new NewCard($$parsedSource as Partial<NewCard>);
     }
 }
 
@@ -125,9 +295,9 @@ export class NewNote {
      * Creates a new NewNote instance from a string or object.
      */
     static createFrom($$source: any = {}): NewNote {
-        const $$createField2_0 = $$createType0;
-        const $$createField5_0 = $$createType0;
-        const $$createField6_0 = $$createType2;
+        const $$createField2_0 = $$createType3;
+        const $$createField5_0 = $$createType3;
+        const $$createField6_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("tags" in $$parsedSource) {
             $$parsedSource["tags"] = $$createField2_0($$parsedSource["tags"]);
@@ -225,9 +395,9 @@ export class Note {
      * Creates a new Note instance from a string or object.
      */
     static createFrom($$source: any = {}): Note {
-        const $$createField4_0 = $$createType0;
-        const $$createField8_0 = $$createType0;
-        const $$createField9_0 = $$createType2;
+        const $$createField4_0 = $$createType3;
+        const $$createField8_0 = $$createType3;
+        const $$createField9_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("tags" in $$parsedSource) {
             $$parsedSource["tags"] = $$createField4_0($$parsedSource["tags"]);
@@ -242,7 +412,104 @@ export class Note {
     }
 }
 
+/**
+ * Ref is a single outgoing reference to another card. kind=parent expresses
+ * nesting (this card is filed under the target); kind=link is a neutral link.
+ */
+export class Ref {
+    "id": string;
+
+    /**
+     * "link" (default) | "parent"
+     */
+    "kind": string;
+
+    /** Creates a new Ref instance. */
+    constructor($$source: Partial<Ref> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("kind" in $$source)) {
+            this["kind"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new Ref instance from a string or object.
+     */
+    static createFrom($$source: any = {}): Ref {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new Ref($$parsedSource as Partial<Ref>);
+    }
+}
+
+/**
+ * Tags is the per-axis tag map. type/status are always materialized (defaults
+ * note/todo); the rest only when set. horizon's logical default `now` is applied
+ * on read by the service, not stored, so an absent horizon stays absent on disk.
+ */
+export class Tags {
+    /**
+     * required, default note
+     */
+    "type": string;
+
+    /**
+     * required, default todo
+     */
+    "status": string;
+
+    /**
+     * 0-1
+     */
+    "priority"?: string;
+
+    /**
+     * 0-1, logical default now
+     */
+    "horizon"?: string;
+
+    /**
+     * 0-N, free text allowed
+     */
+    "area"?: string[];
+
+    /**
+     * 0-1
+     */
+    "effort"?: string;
+
+    /** Creates a new Tags instance. */
+    constructor($$source: Partial<Tags> = {}) {
+        if (!("type" in $$source)) {
+            this["type"] = "";
+        }
+        if (!("status" in $$source)) {
+            this["status"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new Tags instance from a string or object.
+     */
+    static createFrom($$source: any = {}): Tags {
+        const $$createField4_0 = $$createType3;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("area" in $$parsedSource) {
+            $$parsedSource["area"] = $$createField4_0($$parsedSource["area"]);
+        }
+        return new Tags($$parsedSource as Partial<Tags>);
+    }
+}
+
 // Private type creation functions
-const $$createType0 = $Create.Array($Create.Any);
-const $$createType1 = Anchor.createFrom;
-const $$createType2 = $Create.Array($$createType1);
+const $$createType0 = Tags.createFrom;
+const $$createType1 = Ref.createFrom;
+const $$createType2 = $Create.Nullable($$createType1);
+const $$createType3 = $Create.Array($Create.Any);
+const $$createType4 = Anchor.createFrom;
+const $$createType5 = $Create.Array($$createType4);
