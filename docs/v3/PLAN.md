@@ -288,8 +288,12 @@ Se detalla cuando lleguemos. Reusa el editor CodeMirror que ya existe.
   `journal.go`/`card_test.go`, bindings regeneradas note-only, shim `backend.ts`
   eliminado. Fences `:::card` viejos quedan como texto legacy; `journal.ndjson`
   huérfano no se borra. Build verde (`go build -tags gtk3` + tsc + vite).
-- **Fase 1 — backend de entidades:** modelo `Card` + store `.noteit/timeline.md`
-  append-only + servicio (`CreateCard`, `ListCards`). Inmutable, id único.
+- **Fase 1 — backend de entidades: [HECHO]** (commit `585eda7`). `card.go`
+  (modelo + framing serialize/parse con `bytes:N`+footer, torn-tail vs corrupción),
+  `taxonomy.go` (diccionario data-driven 6 ejes + resolver heurístico), `cardservice.go`
+  (servicio Wails SEPARADO: `CreateCard`/`ListCards(filter)`/`GetCard` con backlinks
+  e hijas derivadas; append-only durable con rollback de short-write). Inmutable, id
+  único. Revisado con Codex (5 fixes), build verde (go build/test/vet + tsc + vite).
 - **Fase 2 — UI timeline:** feed + composer rápido + tags + linkear (nueva tarjeta
   con `ref`) + backlinks visibles + filtro por tag.
 - **Fase 3 — embeds:** token `!card[uuid]` en archivos de texto, render read-only.
@@ -329,3 +333,5 @@ Refinamos el alcance de cada fase a medida que cerramos §1–§4.
 | 2026-06-02 | Conflicto en eje de 1 valor = error duro (no crea) | CERRADO |
 | 2026-06-02 | Heurística token→eje + autocompletar fuzzy; area = libre/última palabra | CERRADO |
 | 2026-06-02 | Todo inmutable incl. `area` → timeline append-only puro | CERRADO |
+| 2026-06-02 | CardService = servicio Wails SEPARADO (no colgado de NoteService) | CERRADO |
+| 2026-06-02 | Fase 1 ejecutada (commit 585eda7); revisada Codex; build verde | HECHO |
