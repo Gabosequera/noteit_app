@@ -1,8 +1,13 @@
 import "./style.css";
 import { Cmdline } from "./cmdline.js";
-import { NoteService, Note, NewNote, Anchor } from "../bindings/github.com/Gabosequera/noteit_app/index.js";
+import { NoteService, Note, NewNote, Anchor, CardService, CardFilter, NewCard } from "../bindings/github.com/Gabosequera/noteit_app/index.js";
 import { NoteEditor, type VimMode } from "./editor/noteEditor.js";
 import { tagColor, type ParsedStatement } from "./statement.js";
+import { mapCard, type CardVM } from "./cards/cardData.js";
+import { renderTimeline, buildCardEl } from "./cards/cardView.js";
+import { renderCardFocus } from "./cards/cardFocus.js";
+import { cardEmbeds, refreshEmbeds, insertEmbed, type EmbedSpec } from "./editor/cardEmbed.js";
+import { HelpPage } from "./help.js";
 import {
     CommandRegistry,
     InputDispatcher,
@@ -34,6 +39,16 @@ const STATUS_COLOR: Record<string, string> = {
 };
 
 let NOTES: DeckNote[] = [];
+
+/* ───────────────────────── v3 cards (the PRIMARY surface) ─────────────────────────
+   Cards are the immutable, append-only timeline (CardService). Notes/docs are the
+   secondary text surface (NoteService). `view` decides which the detail pane shows;
+   it defaults to the card timeline. */
+let CARDS: CardVM[] = [];
+let cursorCardId: string | null = null;             // cursored card in the timeline
+let focusCard: CardVM | null = null;                // the card the focus view is reading (GetCard result)
+let focusReq = 0;                                   // monotonic token: only the latest GetCard may commit
+let view: "timeline" | "doc" | "card" = "timeline"; // primary = the card timeline; "card" = focus/thread
 
 function fmtWhen(iso: unknown): string {
     if (!iso) return "";
@@ -113,6 +128,8 @@ let statusTimer: number | undefined;         // clears a transient showcmd notic
    mounted ONCE and persists across note switches (we only call editor.setDoc);
    the head/title/meta around it are cheap to rebuild. */
 let editor: NoteEditor | null = null;        // the one persistent editor instance
+let timelineHost: HTMLElement | null = null; // mount point for the card timeline (primary view)
+let focusHost: HTMLElement | null = null;    // mount point for the card focus/thread view
 let editorHost: HTMLElement | null = null;   // stable mount point inside the detail pane
 let detailHead: HTMLElement | null = null;   // rebuilt-per-note header above the editor
 let detailEmpty: HTMLElement | null = null;  // empty-state node (shown when no notes exist)
@@ -172,6 +189,350 @@ function metaBlock(n: DeckNote) {
    editor host, and an empty-state node) and instantiates the editor a single
    time. Note switches only swap the buffer (editor.setDoc) — we never tear the
    view down, which keeps switching cheap and the scroll virtualization warm. */
+/* ───────────────────────── Card timeline (primary surface) ─────────────────────────
+   The timeline mounts ONCE into the detail pane and persists; loadCards refreshes
+   the data and renderCardTimeline repaints it. applyView toggles whether the detail
+   pane shows the timeline (cards) or the note editor (doc/text). */
+function ensureTimelineHost() {
+    if (timelineHost) return;
+    timelineHost = document.createElement("div");
+    timelineHost.className = "timeline-host";
+    detailScroll.prepend(timelineHost);
+}
+
+function renderCardTimeline() {
+    ensureTimelineHost();
+    if (cursorCardId && !CARDS.some((c) => c.id === cursorCardId)) cursorCardId = null;
+    if (!cursorCardId && CARDS.length) cursorCardId = CARDS[CARDS.length - 1].id;
+    renderTimeline(timelineHost!, CARDS, {
+        cursorId: cursorCardId,
+        onSetCursor: (id) => { if (!CARDS.some((c) => c.id === id)) return; cursorCardId = id; paintCardCursor(); paintStatusSegments(); },
+        handlers: {
+            onClick: (vm) => { cursorCardId = vm.id; paintCardCursor(); paintStatusSegments(); },
+            onLink: (vm) => openLinkComposer(vm),
+            onOpenRef: (id) => {
+                if (!CARDS.some((c) => c.id === id)) { notify(`tarjeta #${id.replace(/-/g, "").slice(0, 4)} fuera de la vista`); return; }
+                cursorCardId = id; paintCardCursor(); scrollCursorIntoView(); paintStatusSegments();
+            },
+        },
+    });
+    paintStatusSegments();
+}
+
+/* repaint just the cursor highlight without a full timeline rebuild. */
+function paintCardCursor() {
+    if (!timelineHost) return;
+    timelineHost.querySelectorAll(".tl-node.is-cursor, .card.is-cursor").forEach((el) => el.classList.remove("is-cursor"));
+    if (!cursorCardId) return;
+    const node = timelineHost.querySelector(`.tl-node [data-id="${cssEsc(cursorCardId)}"]`)?.closest(".tl-node") as HTMLElement | null;
+    if (node) {
+        node.classList.add("is-cursor");
+        node.querySelector(".card")?.classList.add("is-cursor");
+    }
+}
+function scrollCursorIntoView() {
+    if (!timelineHost || !cursorCardId) return;
+    const card = timelineHost.querySelector(`.card[data-id="${cssEsc(cursorCardId)}"]`) as HTMLElement | null;
+    card?.scrollIntoView({ block: "nearest" });
+}
+function cssEsc(s: string): string {
+    return (window.CSS && CSS.escape) ? CSS.escape(s) : s.replace(/["\\]/g, "\\$&");
+}
+
+/* ───────────────────────── Card focus / thread view (GetCard) ─────────────────────────
+   A single card read large, with its derived relations (backlinks = incoming kind=link,
+   children = incoming kind=parent). The focus host mounts ONCE and persists; openCardFocus
+   fetches the card (relations are server-derived), and renderCardFocusView paints it. */
+function ensureFocusHost() {
+    if (focusHost) return;
+    focusHost = document.createElement("div");
+    focusHost.className = "focus-host";
+    detailScroll.prepend(focusHost);
+}
+
+/* resolve relation ids against the loaded set, counting (not hiding) any that aren't
+   present so the view can be honest about a partial picture. */
+function resolveCards(ids: string[], byId: Map<string, CardVM>): { found: CardVM[]; missing: number } {
+    const found: CardVM[] = [];
+    let missing = 0;
+    for (const id of ids) {
+        const c = byId.get(id);
+        if (c) found.push(c); else missing++;
+    }
+    return { found, missing };
+}
+
+/* enter the focus view for a card: fetch it (with server-derived relations), park the
+   cursor on it (so leaving lands there), and switch the detail pane to the thread. */
+async function openCardFocus(id: string) {
+    const req = ++focusReq;                          // claim the latest-fetch slot
+    let card;
+    try {
+        card = await CardService.GetCard(id);
+    } catch (err) {
+        if (req === focusReq) {                       // only the latest fetch may report
+            console.error("GetCard failed", err);
+            notify("no se pudo abrir la tarjeta");
+        }
+        return;
+    }
+    if (req !== focusReq) return;                     // a newer open/back superseded us
+    focusCard = mapCard(card);
+    cursorCardId = id;
+    setSurface("card");
+}
+
+function renderCardFocusView() {
+    ensureFocusHost();
+    if (!focusCard) { backToTimeline(); return; }
+    const byId = new Map(CARDS.map((c) => [c.id, c]));
+    const refTarget = focusCard.refId ? byId.get(focusCard.refId) ?? null : null;
+    const children = resolveCards(focusCard.children, byId);
+    const backlinks = resolveCards(focusCard.backlinks, byId);
+    renderCardFocus(focusHost!, {
+        card: focusCard,
+        refTarget,
+        children: children.found,
+        backlinks: backlinks.found,
+        missing: children.missing + backlinks.missing,
+    }, {
+        onBack: () => backToTimeline(),
+        onOpenCard: (rid) => { void openCardFocus(rid); },
+        onLink: (vm) => openLinkComposer(vm),
+    });
+    paintStatusSegments();
+}
+
+/* leave the focus view, returning to the timeline with the read card under the cursor. */
+function backToTimeline() {
+    setSurface("timeline");
+    paintCardCursor();
+    scrollCursorIntoView();
+}
+
+/* ───────────────────────── Doc surface (text notes that embed cards) ─────────────────────────
+   The note editor is the SECONDARY surface: plain markdown that can embed immutable
+   cards via `!card[uuid]` lines. Entering hands the keyboard to vim; leaving blurs
+   the editor (so structural app keys work again) and flushes any pending body save.
+
+   blurEditorAndFlush is the single, explicit "step out of the editor" primitive used
+   by every doc→elsewhere transition (mirrors the blur+flush setScope does, but usable
+   on its own from a vim ex-command where the scope machine isn't the trigger). */
+function blurEditorAndFlush() {
+    if (editor && editor.view.hasFocus) editor.view.contentDOM.blur();
+    void flushBodySave();
+}
+
+/* open the note at sidebar index `i` as the doc surface and focus the editor. Note
+   bodies are already in memory (loadNotes), so this is synchronous — no load race. */
+function openDoc(i: number) {
+    active = i;
+    setSurface("doc");      // applyView → renderDetail loads the body into the editor
+    renderSidebar();        // repaint with view=doc so the note (not the timeline row) is active
+    setScope(DOCUMENT);     // hand the keyboard to CodeMirror + vim
+}
+
+/* open the currently-active note as a doc (used by the `:doc` palette command, which
+   can fire from the timeline where there is no sidebar click). */
+function openActiveDoc() {
+    if (visibleNotes().length === 0) { notify("no hay notas para abrir"); return; }
+    openDoc(active);
+}
+
+/* leave the doc surface back to the card timeline (the `:timeline` vim ex-command). */
+function exitDocToTimeline() {
+    blurEditorAndFlush();
+    setSurface("timeline");
+    paintCardCursor();
+    scrollCursorIntoView();
+}
+
+/* insert the cursored card as an embed at the editor caret (the `:embed` vim
+   ex-command). The card last cursored in the timeline is the one embedded; resolution
+   to DOM happens lazily through the EmbedSpec, so we only need its id here. */
+function embedCard() {
+    if (view !== "doc" || !editor) { notify("abrí una nota para insertar una tarjeta"); return; }
+    const vm = cursorCardId ? CARDS.find((c) => c.id === cursorCardId) ?? null : null;
+    if (!vm) { notify("seleccioná una tarjeta en la línea de tiempo para insertarla"); return; }
+    insertEmbed(editor.view, vm.id);
+    notify(`tarjeta #${vm.shortId} insertada`);
+}
+
+/* an embed's flag (or its ref preview) was clicked: leave the editor cleanly and open
+   the card's thread. */
+function openCardFromEmbed(id: string) {
+    blurEditorAndFlush();
+    void openCardFocus(id);
+}
+
+/* the small link arrow used on the embed flag, built namespaced so it renders as a
+   real SVG (and avoids any innerHTML in the embed path). */
+function linkGlyph(): SVGSVGElement {
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    const path = document.createElementNS(NS, "path");
+    path.setAttribute("d", "M9 17l-5-5 5-5M4 12h11a5 5 0 0 1 5 5v1");
+    svg.appendChild(path);
+    return svg;
+}
+
+/* EmbedSpec: the app half of the editor's card embeds. The editor module locates
+   `!card[uuid]` lines; this resolves each id against the live CARDS and builds the
+   read-only DOM (or a tombstone when the card is gone — cards are append-only, so a
+   missing id means it was never created, not deleted). */
+function buildEmbedSpec(): EmbedSpec {
+    return {
+        render(id: string): HTMLElement {
+            const byId = new Map(CARDS.map((c) => [c.id, c]));
+            const vm = byId.get(id) ?? null;
+            if (!vm) {
+                const miss = document.createElement("div");
+                miss.className = "embed embed-missing";
+                miss.textContent = `tarjeta no encontrada · #${id.slice(0, 8)}`;
+                return miss;
+            }
+            const wrap = document.createElement("div");
+            wrap.className = "embed";
+
+            // Build the flag with DOM APIs (no innerHTML) so the card-derived shortId is
+            // never interpolated into a markup string — text goes in as a text node.
+            const flag = document.createElement("button");
+            flag.className = "embed-flag";
+            flag.type = "button";
+            flag.appendChild(linkGlyph());
+            flag.appendChild(document.createTextNode(`tarjeta · #${vm.shortId}`));
+            flag.addEventListener("click", () => openCardFromEmbed(vm.id));
+            wrap.appendChild(flag);
+
+            const refTarget = vm.refId ? byId.get(vm.refId) ?? null : null;
+            wrap.appendChild(buildCardEl(vm, {
+                mode: "embed",
+                refTarget,
+                handlers: { onOpenRef: openCardFromEmbed },
+            }));
+            return wrap;
+        },
+    };
+}
+
+/* re-fetch + repaint the focus view if it is open (e.g. after a new link/child was
+   minted), so freshly-created relations appear without leaving the thread. */
+async function refreshFocusIfOpen() {
+    if (view !== "card" || !focusCard) return;
+    await openCardFocus(focusCard.id);
+}
+
+/* setSurface is the SINGLE gate for changing the active detail-pane surface
+   (timeline / card / doc). Leaving the focus view (card → anything else)
+   invalidates any in-flight GetCard via focusReq and drops focusCard, so a late
+   fetch can never resurrect a stale thread — the race guard lives here once
+   instead of in every caller. (Distinct from the legacy sidebar-mode `setView`.) */
+function setSurface(next: "timeline" | "doc" | "card") {
+    if (view === "card" && next !== "card") {
+        focusReq++;            // a superseded fetch must not commit after we leave
+        focusCard = null;
+    }
+    view = next;
+    applyView();
+}
+
+/* applyView shows ONE of three surfaces in the detail pane: the card timeline
+   (primary), the card focus/thread view, or the note editor (doc/text). The two card
+   surfaces hide the editor structure outright; doc mode lets renderDetail() own the
+   head/host/empty visibility (so it can restore them from the note list state). */
+function applyView() {
+    ensureTimelineHost();
+    ensureFocusHost();
+    const isTimeline = view === "timeline";
+    const isCard = view === "card";
+    const isDoc = view === "doc";
+    timelineHost!.hidden = !isTimeline;
+    focusHost!.hidden = !isCard;
+    detailScroll.classList.toggle("view-timeline", isTimeline);
+    detailScroll.classList.toggle("view-card", isCard);
+    detailScroll.classList.toggle("view-doc", isDoc);
+    detailScroll.classList.toggle("has-editor", isDoc);   // editor layout is doc-only
+    if (isDoc) {
+        renderDetail();   // owns head/host/empty visibility from the note list
+        return;
+    }
+    // both card surfaces share a clean slate (no editor chrome)
+    if (detailHead) detailHead.hidden = true;
+    if (editorHost) editorHost.hidden = true;
+    if (detailEmpty) detailEmpty.hidden = true;
+    if (isTimeline) renderCardTimeline();
+    else renderCardFocusView();
+}
+
+async function loadCards() {
+    try {
+        const list = await CardService.ListCards(new CardFilter());
+        CARDS = (list ?? []).map(mapCard);
+        renderSidebar();  // keep the pinned timeline-row count in sync with the card set
+        if (view === "timeline") renderCardTimeline();
+        else if (view === "card") await refreshFocusIfOpen();  // re-fetch derived relations
+        else if (view === "doc" && editor) refreshEmbeds(editor.view);  // re-resolve embeds
+    } catch (err) {
+        console.error("ListCards failed", err);
+        CARDS = [];
+        if (view === "timeline") renderCardTimeline();
+        else if (view === "card") renderCardFocusView();   // drop stale relations honestly
+        else if (view === "doc" && editor) refreshEmbeds(editor.view);  // repaint as tombstones
+        notify("backend de tarjetas no disponible");
+    }
+}
+
+/* mint a card via CardService, then reload + park the cursor on the new card. Cards
+   are immutable/append-only, so create is the only write. */
+async function createCard(body: string, tags: string[], linkId: string | null, linkKind: "" | "link" | "parent") {
+    try {
+        const input = NewCard.createFrom({
+            body,
+            tags,
+            refId: linkId ?? "",
+            refKind: linkId ? (linkKind || "link") : "",
+        });
+        const created = await CardService.CreateCard(input);
+        await loadCards();   // reloads CARDS; if a thread is open, refreshes its relations too
+        if (view !== "card" && created?.id) {
+            cursorCardId = created.id;
+            if (view === "timeline") { paintCardCursor(); scrollCursorIntoView(); paintStatusSegments(); }
+        }
+        notify(linkId ? `tarjeta enlazada · #${created?.id ? created.id.replace(/-/g, "").slice(0, 4) : "?"}` : "tarjeta creada");
+    } catch (err) {
+        console.error("CreateCard failed", err);
+        notify("no se pudo crear la tarjeta");
+    }
+}
+
+/* open the composer linked to a card (the cursor card by default). kind=link is a
+   sibling reply; kind=parent nests the new card under the target. */
+function openLinkComposer(target?: CardVM, kind: "link" | "parent" = "link") {
+    const vm = target ?? CARDS.find((c) => c.id === cursorCardId) ?? null;
+    if (!vm) { notify("no hay tarjeta seleccionada"); return; }
+    cmdline.show({ intent: "card", linkTarget: { id: vm.id, shortId: vm.shortId, body: vm.body, kind } });
+}
+
+function jumpCardCursor(where: "top" | "bottom") {
+    if (CARDS.length === 0) return;
+    cursorCardId = where === "top" ? CARDS[0].id : CARDS[CARDS.length - 1].id;
+    paintCardCursor();
+    scrollCursorIntoView();
+    paintStatusSegments();
+}
+
+function moveCardCursor(delta: number) {
+    if (CARDS.length === 0) return;
+    let idx = CARDS.findIndex((c) => c.id === cursorCardId);
+    if (idx < 0) idx = CARDS.length - 1;
+    idx = Math.min(CARDS.length - 1, Math.max(0, idx + delta));
+    cursorCardId = CARDS[idx].id;
+    paintCardCursor();
+    scrollCursorIntoView();
+    paintStatusSegments();
+}
+
 function ensureEditor() {
     if (editor) return;
     detailHead = document.createElement("div");
@@ -189,6 +550,15 @@ function ensureEditor() {
         onChange: (doc) => scheduleBodySave(doc),
         onModeChange: (m) => onVimMode(m),
         onCursorChange: (line, col) => { slPos.textContent = `${line}:${col}`; },
+        // Render `!card[uuid]` lines as read-only card embeds inside the live buffer.
+        extensions: [cardEmbeds(buildEmbedSpec())],
+        // vim owns `:` in the editor, so structural triggers that must fire from INSIDE
+        // the editor are ex-commands: `:embed` drops the cursored card, `:timeline`
+        // steps back out to the card timeline.
+        exCommands: [
+            { name: "embed", prefix: "emb", run: embedCard },
+            { name: "timeline", prefix: "time", run: exitDocToTimeline },
+        ],
     });
 }
 
@@ -308,16 +678,47 @@ async function flushBodySave() {
 }
 
 /* ───────────────────────── Sidebar (note list / tree) ───────────────────────── */
+/* A single clickable "timeline" entry pinned at the top of the sidebar. Clicking it
+   opens the WHOLE card timeline in the detail pane — it does NOT expand the cards into
+   the sidebar (that noise is exactly what the user did not want). It is highlighted
+   while a card surface (timeline/focus) is the active view. */
+function appendTimelineRow() {
+    const el = document.createElement("div");
+    el.className = "tl-link" + (view === "timeline" || view === "card" ? " is-active" : "");
+    el.innerHTML =
+        `<svg class="tl-link-ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+         <span class="tl-link-name">timeline</span>
+         <span class="tl-link-count">${CARDS.length}</span>`;
+    el.addEventListener("click", () => openTimelineSurface());
+    sidebarBody.appendChild(el);
+}
+
+/* Switch the detail pane to the card timeline from a sidebar click: step out of the
+   editor cleanly (flush + blur), show the timeline, and repaint the sidebar so the
+   timeline row / active note highlight track the new surface. */
+function openTimelineSurface() {
+    blurEditorAndFlush();
+    setSurface("timeline");
+    renderSidebar();
+    paintCardCursor();
+    scrollCursorIntoView();
+}
+
 function renderSidebar() {
     sidebar.classList.toggle("tree-mode", viewMode === "tree");
     folderName.textContent = viewMode === "tree" ? "notes" : (tagFilter ?? baseFolder);
     sidebarBody.innerHTML = "";
 
-    if (viewMode === "tree") { renderTree(); return; }
+    if (viewMode === "tree") { appendTimelineRow(); renderTree(); return; }
+
+    appendTimelineRow();
 
     const list = visibleNotes();
     if (list.length === 0) {
-        sidebarBody.innerHTML = `<div class="sidebar-empty">Carpeta vacía.<br/>Pulsá <kbd>+</kbd> o <kbd>i</kbd> para una nota nueva.</div>`;
+        const empty = document.createElement("div");
+        empty.className = "sidebar-empty";
+        empty.innerHTML = `Carpeta vacía.<br/>Pulsá <kbd>+</kbd> o <kbd>i</kbd> para una nota nueva.`;
+        sidebarBody.appendChild(empty);
         return;
     }
     if (active >= list.length) active = list.length - 1;
@@ -325,7 +726,9 @@ function renderSidebar() {
 
     list.forEach((n, i) => {
         const el = document.createElement("div");
-        el.className = "note-item" + (i === active ? " is-active" : "");
+        // A note is highlighted only while it is the open doc surface — on the card
+        // timeline the timeline row owns the highlight instead.
+        el.className = "note-item" + (i === active && view === "doc" ? " is-active" : "");
         const preview = bodyPreview(n.body);
         const tags = n.tags.slice(0, 3).map((t) => `<span class="ni-tag" style="--c:${tagColor(t)}">${escHtml(t)}</span>`).join("");
         el.innerHTML =
@@ -336,13 +739,17 @@ function renderSidebar() {
             </div>
             ${preview ? `<div class="ni-sub">${escHtml(preview)}</div>` : ""}
             ${tags ? `<div class="ni-tags">${tags}</div>` : ""}`;
-        // Render first, then setScope: setScope's renderScopeCursor must paint
-        // `.is-cursor` onto the freshly rebuilt DOM, not onto nodes we're about
-        // to discard.
-        el.addEventListener("click", () => { active = i; renderSidebar(); renderDetail(); setScope(SIDEBAR); });
+        // Clicking a note opens it as the doc surface and focuses the editor (openDoc
+        // owns the render + surface + scope switch, so the embed-capable editor is
+        // shown rather than left hidden behind the card timeline).
+        el.addEventListener("click", () => openDoc(i));
         sidebarBody.appendChild(el);
     });
-    sidebarBody.children[active]?.scrollIntoView({ block: "nearest" });
+    // The active note is offset by the pinned timeline row (child 0), so scroll the
+    // matching .note-item rather than indexing sidebarBody.children directly.
+    if (view === "doc") {
+        sidebarBody.querySelectorAll(".note-item")[active]?.scrollIntoView({ block: "nearest" });
+    }
 }
 
 function renderTree() {
@@ -371,8 +778,12 @@ function renderTree() {
     });
 }
 
-/* Re-render both panes. */
-function render() { renderSidebar(); renderDetail(); }
+/* Re-render both panes. applyView owns the detail pane for ALL views (timeline /
+   card / doc), so there is a single place that decides which surface shows. */
+function render() {
+    renderSidebar();
+    applyView();
+}
 
 function move(delta: number) {
     const list = visibleNotes();
@@ -501,7 +912,21 @@ function toggleTree() {
     render();
 }
 folderSwitch.addEventListener("click", toggleTree);
-addBtn.addEventListener("click", () => { setMode("insert"); notify("✎ new note"); });
+/* The "+" affordance is surface-aware: while a card surface is showing (the primary
+   timeline or a focused thread) it composes a CARD; only in the secondary text/doc
+   surface does it start a NOTE. This is what was trapping users into making notes
+   when they meant to create a card. */
+addBtn.addEventListener("click", () => { startPrimaryCompose(); });
+
+/* The single "create" entry the UI exposes. Routes to the card composer when the
+   active surface is a card surface (timeline/focus), otherwise the note composer. */
+function startPrimaryCompose() {
+    if (view === "timeline" || view === "card") { cmdline.show({ intent: "card" }); return; }
+    setMode("insert");
+    notify("✎ nueva nota");
+}
+
+const help = new HelpPage();
 
 document.querySelectorAll<HTMLElement>(".tool").forEach((el) => {
     el.addEventListener("click", () => {
@@ -509,6 +934,7 @@ document.querySelectorAll<HTMLElement>(".tool").forEach((el) => {
         document.querySelectorAll(".tool").forEach((t) => t.classList.remove("is-active"));
         if (tool === "tree" || tool === "tags") { el.classList.add("is-active"); setView("tree"); }
         else if (tool === "search") { cmdline.show(); }
+        else if (tool === "help") { help.show(); }
         else if (tool === "settings") { toggleGlass(); }
     });
 });
@@ -571,7 +997,11 @@ const cmdline = new Cmdline({
     addAnchor: (file, lines) => { void addAnchorToActive(file, lines); },
     createNoteFull: (st) => { void createNoteFromStatement(st); },
     listDir: (input) => NoteService.ListDir(input)
-        .then((es) => es.map((e) => ({ name: e.name, isDir: e.isDir })))
+        .then((es) => es.map((e) => ({ name: e.name, isDir: e.isDir }))),
+    createCard: (body, tags, linkId, linkKind) => { void createCard(body, tags, linkId, linkKind); },
+    showTimeline: () => exitDocToTimeline(),
+    openActiveDoc: () => openActiveDoc(),
+    showHelp: () => help.show(),
 });
 
 /* ───────────────────────── Scope / cursor state machine ─────────────────────────
@@ -587,12 +1017,10 @@ function setScope(next: Scope) {
     // Leaving the document context: blur the editor so DOM focus returns to the
     // body (otherwise the editor would keep capturing keys for vim while the
     // logical scope says SIDEBAR), and flush any pending body save so the last
-    // keystrokes aren't lost across the switch.
+    // keystrokes aren't lost across the switch. blurEditorAndFlush is the single
+    // "step out of the editor" primitive — surface changes (e.g. :timeline) use it too.
     if (scope === DOCUMENT && next !== DOCUMENT && next !== LEADER) {
-        if (editor && editor.view.hasFocus) {
-            editor.view.contentDOM.blur();
-            void flushBodySave();
-        }
+        blurEditorAndFlush();
     }
 
     if (next !== LEADER) prevScope = next;
@@ -645,6 +1073,19 @@ function scopeLabel(s: Scope): string {
    from the active note and the current folder/tag. Hidden segments collapse, so
    a note with no git branch simply drops that segment instead of showing a gap. */
 function paintStatusSegments() {
+    if (view === "timeline") {
+        slBranch.hidden = true;
+        slFolder.textContent = "timeline";
+        const cur = CARDS.find((c) => c.id === cursorCardId);
+        slFile.textContent = cur ? `#${cur.shortId}` : "—";
+        return;
+    }
+    if (view === "card") {
+        slBranch.hidden = true;
+        slFolder.textContent = "thread";
+        slFile.textContent = focusCard ? `#${focusCard.shortId}` : "—";
+        return;
+    }
     const list = visibleNotes();
     const n = list[active];
     const branch = n?.branch ?? "";
@@ -666,10 +1107,12 @@ function applyScopeClasses() {
    document scope has no app-painted cursor — CodeMirror renders its own vim block
    cursor — so only the sidebar list gets a `.is-cursor`. */
 function renderScopeCursor() {
-    document.querySelectorAll(".is-cursor").forEach((el) => el.classList.remove("is-cursor"));
+    // scope the clear to the sidebar so the card timeline/focus cursors are never stripped
+    sidebarBody.querySelectorAll(".is-cursor").forEach((el) => el.classList.remove("is-cursor"));
     const ref = scope === LEADER ? prevScope : scope;
     if (ref === SIDEBAR) {
-        const el = sidebarBody.children[active] as HTMLElement | undefined;
+        // The pinned timeline row is child 0; the note cursor indexes the .note-item set.
+        const el = sidebarBody.querySelectorAll(".note-item")[active] as HTMLElement | undefined;
         if (el) { el.classList.add("is-cursor"); el.scrollIntoView({ block: "nearest" }); }
     }
 }
@@ -797,6 +1240,7 @@ const cmds: { id: string; title: string; run: () => void | Promise<void> }[] = [
     { id: "cmdline.open", title: "Línea de comandos", run: () => cmdline.show() },
     { id: "compose.submit", title: "Enviar compositor", run: () => submitCompose() },
     { id: "note.create", title: "Nueva nota", run: () => { closeLeader(); focusCompose(); } },
+    { id: "card.create", title: "Nueva tarjeta", run: () => { closeLeader(); cmdline.show({ intent: "card" }); } },
     { id: "sidebar.top", title: "Inicio de la lista", run: () => { active = 0; render(); renderScopeCursor(); } },
     { id: "sidebar.bottom", title: "Fin de la lista", run: () => { active = Math.max(0, visibleNotes().length - 1); render(); renderScopeCursor(); } },
 ];
@@ -845,6 +1289,56 @@ window.addEventListener("keydown", (ev) => {
 
     const t = ev.target as HTMLElement | null;
 
+    // `?` opens the welcome / guía from anywhere — except while typing in a field or
+    // inside the vim editor (where `?` is vim's reverse search). Closing is owned by
+    // the HelpPage's own capture handler.
+    if (ev.key === "?" && !ev.ctrlKey && !ev.metaKey && !ev.altKey && !help.open()) {
+        const inEditor = !!t && !!t.closest(".cm-editor");
+        const typingNow = !!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable);
+        if (!inEditor && !typingNow) { ev.preventDefault(); help.show(); return; }
+    }
+
+    // The card timeline owns j/k/g/G navigation while it is the active surface and
+    // nothing is being typed. `:` / `i` etc. fall through to the dispatcher/cmdline.
+    if (view === "timeline" && !cmdline.isOpen()) {
+        const typingNow = !!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable);
+        const plain = !ev.ctrlKey && !ev.metaKey && !ev.altKey;
+        if (!typingNow && plain) {
+            if (ev.key === "j" || ev.key === "ArrowDown") { ev.preventDefault(); moveCardCursor(1); return; }
+            if (ev.key === "k" || ev.key === "ArrowUp") { ev.preventDefault(); moveCardCursor(-1); return; }
+            if (ev.key === "g") { ev.preventDefault(); jumpCardCursor("top"); return; }
+            if (ev.key === "G") { ev.preventDefault(); jumpCardCursor("bottom"); return; }
+            // i / o open the card composer; Enter focuses the cursor card (its thread);
+            // l links a sibling, p nests a child under the cursor card.
+            if (ev.key === "i" || ev.key === "o") {
+                ev.preventDefault();
+                cmdline.show({ intent: "card" });
+                return;
+            }
+            if (ev.key === "Enter") {
+                ev.preventDefault();
+                if (cursorCardId) void openCardFocus(cursorCardId);
+                return;
+            }
+            if (ev.key === "l") { ev.preventDefault(); openLinkComposer(); return; }
+            if (ev.key === "p") { ev.preventDefault(); openLinkComposer(undefined, "parent"); return; }
+        }
+    }
+
+    // The card focus/thread view owns its own minimal key set: Esc/h/q step back to
+    // the timeline; i/o compose; l links a sibling and p nests a child under the
+    // focused card. Click navigates between related cards.
+    if (view === "card" && !cmdline.isOpen()) {
+        const typingNow = !!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable);
+        const plain = !ev.ctrlKey && !ev.metaKey && !ev.altKey;
+        if (!typingNow && plain) {
+            if (ev.key === "Escape" || ev.key === "h" || ev.key === "q") { ev.preventDefault(); backToTimeline(); return; }
+            if (ev.key === "i" || ev.key === "o") { ev.preventDefault(); cmdline.show({ intent: "card" }); return; }
+            if (ev.key === "l" && focusCard) { ev.preventDefault(); openLinkComposer(focusCard); return; }
+            if (ev.key === "p" && focusCard) { ev.preventDefault(); openLinkComposer(focusCard, "parent"); return; }
+        }
+    }
+
     // The CodeMirror editor IS real vim — it owns every keystroke (motions,
     // insert, Escape→normal, `:`→ex-line, its own undo). The app only reclaims the
     // pane-nav chords (ctrl+h / ctrl+l) that let you step out to another pane;
@@ -870,9 +1364,11 @@ window.addEventListener("keydown", (ev) => {
 });
 
 /* ───────────────────────── Boot ───────────────────────── */
-render();
+renderSidebar();
+applyView();          // mounts + shows the primary surface (the card timeline)
 // Land in a navigation scope (not the composer) so the statusline stays thin:
 // the composer only appears when you deliberately compose (i / leader→c / →n).
 setScope(DOCUMENT);
 updateBarCaret();
 void loadNotes();
+void loadCards();

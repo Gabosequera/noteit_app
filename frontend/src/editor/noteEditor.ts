@@ -12,14 +12,27 @@
 
 import { EditorView, keymap, drawSelection, lineNumbers } from "@codemirror/view";
 import { EditorState } from "@codemirror/state";
+import type { Extension } from "@codemirror/state";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
 import { syntaxHighlighting, HighlightStyle, indentOnInput } from "@codemirror/language";
 import { tags as t } from "@lezer/highlight";
-import { vim, getCM } from "@replit/codemirror-vim";
+import { vim, getCM, Vim } from "@replit/codemirror-vim";
 
 /** Vim modes surfaced to the app statusline. */
 export type VimMode = "normal" | "insert" | "visual" | "replace" | "visual-line" | "visual-block";
+
+/** A vim ex-command (`:name`) the app registers on top of the editor — e.g.
+    `:embed` or `:timeline`. vim owns the `:` line, so structural triggers the app
+    needs from INSIDE the editor are exposed here rather than as app keybindings. */
+export interface ExCommand {
+    /** Full command name typed after `:` (e.g. "embed"). */
+    name: string;
+    /** A literal prefix of `name` vim accepts as an abbreviation (e.g. "emb"). */
+    prefix: string;
+    /** What to run when the command fires. */
+    run: () => void;
+}
 
 export interface NoteEditorOpts {
     parent: HTMLElement;
@@ -33,6 +46,40 @@ export interface NoteEditorOpts {
     onCursorChange?: (line: number, col: number) => void;
     /** Show line numbers (off by default — prose reads cleaner without them). */
     lineNumbers?: boolean;
+    /** Extra CodeMirror extensions appended after the base set (e.g. card embeds). */
+    extensions?: Extension[];
+    /** Vim ex-commands to register (`:name`). Registration is global to the vim
+        engine and idempotent — see registerExCommands. */
+    exCommands?: ExCommand[];
+}
+
+/* Vim.defineEx mutates a process-global command table, so registering the same
+   command on every NoteEditor construction would stack duplicate handlers. We split
+   the two concerns:
+     · the LIVE handler for a name lives in `exHandlers` and is overwritten on every
+       registration — so re-creating the editor always runs the newest closure (no
+       stale-editor capture), and the global vim command no-ops if it was cleared;
+     · the actual Vim.defineEx call happens once per (name, prefix) — guarded by
+       `exDefined` — because redefining the same name with a DIFFERENT prefix would
+       silently keep vim's first prefix. A conflicting prefix is a programming error,
+       so we warn rather than fail silently. */
+const exHandlers = new Map<string, () => void>();
+const exDefined = new Map<string, string>(); // name → the prefix it was defined with
+function registerExCommands(cmds: ExCommand[]): void {
+    for (const cmd of cmds) {
+        exHandlers.set(cmd.name, cmd.run); // latest closure wins
+        const prior = exDefined.get(cmd.name);
+        if (prior === undefined) {
+            exDefined.set(cmd.name, cmd.prefix);
+            Vim.defineEx(cmd.name, cmd.prefix, () => {
+                // Defer so vim finishes tearing down its ex-command line before the
+                // app moves focus/surface out from under it.
+                queueMicrotask(() => exHandlers.get(cmd.name)?.());
+            });
+        } else if (prior !== cmd.prefix) {
+            console.warn(`ex-command "${cmd.name}" re-registered with prefix "${cmd.prefix}" but vim keeps "${prior}"`);
+        }
+    }
 }
 
 /* noteit dark theme for the editor. Uses the app's CSS custom properties so it
@@ -139,8 +186,11 @@ export class NoteEditor {
             noteitTheme,
             keymap.of([...defaultKeymap, ...historyKeymap]),
             changeListener,
+            ...(opts.extensions ?? []),
         ];
         if (opts.lineNumbers) extensions.splice(1, 0, lineNumbers());
+
+        if (opts.exCommands) registerExCommands(opts.exCommands);
 
         this.view = new EditorView({
             state: EditorState.create({ doc: opts.doc, extensions }),

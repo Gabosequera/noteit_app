@@ -40,7 +40,7 @@
 | `doing`   | wip, in-progress, haciendo |
 | `blocked` | bloqueado, stuck |
 | `review`  | in-review, qa, pr |
-| `done`    | hecho, listo, closed |
+| `done`    | hecho, listo, closed, ready, solved, resuelto |
 
 ## Eje 3 · PRIORITY — urgencia  [0-1 valor]
 

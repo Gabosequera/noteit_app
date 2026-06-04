@@ -32,6 +32,12 @@
     --syn-key: #ff7b72;
     --syn-type: #d2a8ff;
     --syn-cmt: #7ee787;
+    --syn-str: #a5d6ff;
+    --syn-num: #79c0ff;
+    --syn-fn: #d2a8ff;
+    --syn-punc: #9fb0c3;
+
+    --accent-line: color-mix(in srgb, var(--accent) 55%, var(--ink-line));
 
     --font-mono: "JetBrains Mono", "Fira Code", "SF Mono", "Cascadia Code",
         ui-monospace, Menlo, Consolas, monospace;
@@ -195,6 +201,32 @@ body { margin: 0; min-height: 100%; }
 .ni-tags { display: flex; gap: 5px; flex-wrap: wrap; padding-left: 14px; margin-top: 1px; }
 .ni-tag { font-size: 0.66rem; padding: 0 6px; border-radius: 5px; line-height: 1.5; background: var(--glass-hi); color: var(--c); border: 1px solid color-mix(in srgb, var(--c) 45%, transparent); }
 
+/* ── pinned "timeline" entry (opens the whole card timeline in the detail pane) ──
+   A single nav row — deliberately NOT a list of every card, so the sidebar stays
+   quiet. Sits above the note list and above tree rows. */
+.tl-link {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 11px; margin-bottom: 6px;
+    border-radius: 11px; border: 1px solid transparent;
+    cursor: pointer; color: var(--glass-fg);
+    transition: background 0.12s ease, border-color 0.12s ease;
+}
+.tl-link:hover { background: var(--glass-hi); }
+.tl-link-ico { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; color: var(--accent-2, var(--accent)); }
+.tl-link-name { flex: 1; min-width: 0; font-size: 0.92rem; font-weight: 600; }
+.tl-link-count { font-size: 0.72rem; color: var(--glass-fg-dim); flex: none; }
+.tl-link.is-active {
+    position: relative;
+    background: var(--accent-soft);
+    border-color: rgba(255, 159, 69, 0.55);
+    box-shadow: 0 0 0 1px rgba(255,159,69,0.18), 0 6px 18px -10px rgba(255,159,69,0.5);
+}
+.tl-link.is-active::before {
+    content: ""; position: absolute; left: -2px; top: 50%; transform: translateY(-50%);
+    width: 4px; height: 22px; border-radius: 3px; background: var(--accent);
+    box-shadow: 0 0 10px -1px var(--accent);
+}
+
 /* tree rows (outside a folder) */
 .tree-row {
     display: flex; align-items: center; gap: 8px;
@@ -257,6 +289,32 @@ body { margin: 0; min-height: 100%; }
 .detail-scroll.has-editor .detail-empty { flex: 1; }
 
 .detail-empty { height: 100%; display: grid; place-items: center; color: var(--fg-mute); text-align: center; }
+
+/* ── card embeds (read-only cards dropped into a note via `!card[uuid]`) ──
+   These are CodeMirror block widgets replacing a `!card[uuid]` line, so they live
+   inside `.cm-content`. The flag pill is the only click affordance (opens the
+   card's thread); the card itself is non-interactive and dashed to read as a quote
+   of an immutable entity. A missing id renders the tombstone. */
+.embed { position: relative; margin: 18px 0; }
+.embed .embed-flag {
+  position: absolute; top: -9px; left: 14px; z-index: 2;
+  display: flex; align-items: center; gap: 5px; white-space: nowrap;
+  font-family: var(--font-mono); font-size: 0.66rem; letter-spacing: 0.04em;
+  color: var(--accent-2);
+  background: var(--ink-2); padding: 1px 8px; border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent-2) 32%, transparent);
+  cursor: pointer;
+}
+.embed .embed-flag:hover { border-color: color-mix(in srgb, var(--accent-2) 60%, transparent); }
+.embed .embed-flag svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 2; }
+.embed .card { background-color: rgba(20, 28, 40, 0.6); border-style: dashed; }
+.embed .card:hover { border-color: color-mix(in srgb, var(--accent-2) 40%, var(--ink-line)); border-style: solid; }
+.embed-missing {
+  margin: 18px 0; padding: 10px 14px;
+  font-family: var(--font-mono); font-size: 0.8rem; color: var(--fg-mute);
+  border: 1px dashed var(--ink-line); border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
 
 /* note header inside detail */
 .dn-head { display: flex; align-items: center; gap: 12px; color: var(--fg-mute); font-size: 0.82rem; margin-bottom: 10px; }
@@ -553,6 +611,16 @@ kbd {
 .cl-prev-body { margin-top: 8px; color: var(--fg-dim); font-size: 0.82rem; white-space: pre-wrap; }
 .cl-prev-warn { margin-top: 8px; color: #f85149; font-size: 0.78rem; }
 
+/* ── card composer live preview (intent="card") ─────────────────────────────── */
+.cl-card-preview { list-style: none; padding: 10px 12px 12px; }
+.cl-prev-label {
+    font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--fg-mute); margin-bottom: 8px;
+}
+/* the preview renders a real .card; it is not clickable here, so neutralize hover. */
+.cl-card-preview .card { cursor: default; }
+.cl-card-preview .card .card-icon-btn { display: none; }
+
 /* ════════════════════════════════════════════════════════════════════════════
    KEYBOARD-FIRST INTERACTION LAYER
    Selection re-enable · scope focus · cursor item · editable prose · which-key.
@@ -625,3 +693,248 @@ kbd {
 /* ── 4 · LEADER ───────────────────────────────────────────────────────────────
    The floating which-key overlay was removed: leader feedback is now inline,
    nvim "showcmd" style, in the statusline `.st-msg` area (see STATUSLINE). */
+
+/* ════════════════════════════════════════════════════════════════════════════
+   v3 CARDS — timeline + card + ref + doc + embed
+   Ported from app_design/noteitv3/styles.css (the exact concept look), adapted to
+   vanilla TS render (no author segment; axis chips replace free hashtags).
+   ════════════════════════════════════════════════════════════════════════════ */
+
+/* the detail pane hosts either the card timeline or the note editor (toggled by
+   the `view` state). The timeline host owns its own scroll padding. */
+.timeline-host { display: block; }
+.focus-host { display: block; }
+.detail-scroll.view-timeline { padding: 0; }
+.detail-scroll.view-card { padding: 0; }
+
+/* ════════════════ CARD FOCUS / THREAD VIEW ════════════════
+   A single card read large with its derived relations (children = kind=parent,
+   backlinks = kind=link). Reuses the .card builder; only the scaffolding is new. */
+.card-focus { padding: 24px 34px 48px; max-width: 940px; }
+.focus-head {
+  display: flex; align-items: center; gap: 12px;
+  margin-bottom: 18px;
+}
+.focus-back {
+  font-family: var(--font-mono); font-size: 0.82rem; color: var(--fg-dim);
+  background: transparent; border: 1px solid var(--ink-line); border-radius: 6px;
+  padding: 3px 10px; cursor: pointer;
+}
+.focus-back:hover { color: var(--fg); border-color: var(--accent-line); }
+.focus-id { font-family: var(--font-mono); font-size: 0.82rem; color: var(--fg-mute); }
+.focus-lead { margin-bottom: 8px; }
+.focus-section { margin-top: 26px; }
+.focus-sec-head {
+  font-family: var(--font-mono); font-size: 0.78rem; color: var(--fg-mute);
+  letter-spacing: 0.04em; margin-bottom: 14px;
+}
+.focus-rel { position: relative; padding-left: 18px; margin-bottom: 14px; }
+.focus-rel::before {
+  content: ""; position: absolute; left: 4px; top: 16px;
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--ink); border: 2px solid var(--c, var(--fg-mute));
+}
+.focus-empty { margin-top: 22px; color: var(--fg-mute); font-family: var(--font-mono); font-size: 0.84rem; }
+.focus-missing { margin-top: 16px; color: var(--fg-mute); font-size: 0.76rem; opacity: 0.8; }
+
+/* ════════════════ TIMELINE ════════════════ */
+.timeline { padding: 26px 34px 40px; max-width: 940px; }
+.tl-empty { color: var(--fg-mute); font-family: var(--font-mono); font-size: 0.86rem; padding: 64px 8px; display: grid; gap: 10px; place-items: start; }
+.tl-empty-title { color: var(--fg-dim); font-size: 1rem; font-weight: 600; }
+.tl-empty-hint { color: var(--fg-mute); }
+.tl-empty kbd { font-family: var(--font-mono); background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.14); border-radius: 4px; padding: 1px 6px; color: var(--fg); }
+.tl-daystamp {
+  font-family: var(--font-mono); font-size: 0.82rem; color: var(--fg-mute);
+  letter-spacing: 0.03em; margin: 6px 0 18px;
+}
+.tl-track { position: relative; padding-left: 30px; }
+.tl-track::before {
+  content: ""; position: absolute; left: 5px; top: 6px; bottom: 6px; width: 1.5px;
+  background: linear-gradient(180deg, transparent, var(--ink-line) 8%, var(--ink-line) 92%, transparent);
+}
+.tl-node { position: relative; margin-bottom: 16px; }
+.tl-node::before {
+  content: ""; position: absolute; left: -30px; top: 16px;
+  width: 11px; height: 11px; border-radius: 50%;
+  background: var(--ink); border: 2px solid var(--c, var(--fg-mute));
+  box-shadow: 0 0 0 4px var(--ink-2);
+}
+.tl-node.is-cursor::before { background: var(--c, var(--accent)); box-shadow: 0 0 0 4px var(--ink-2), 0 0 12px -1px var(--c, var(--accent)); }
+
+/* ════════════════ CARD (shared: timeline + embed) ════════════════ */
+.card {
+  position: relative;
+  border: 1px solid var(--ink-line);
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, rgba(255,255,255,0.022), rgba(255,255,255,0));
+  background-color: var(--ink-2);
+  overflow: hidden;
+  transition: border-color 0.14s ease, box-shadow 0.14s ease, transform 0.14s ease;
+}
+.card.clickable { cursor: pointer; }
+.card.clickable:hover { border-color: color-mix(in srgb, var(--accent) 35%, var(--ink-line)); }
+.card.is-cursor {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 1px var(--accent-line), 0 14px 34px -22px rgba(0,0,0,0.8), 0 0 26px -14px var(--accent);
+}
+.card::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 2px;
+  background: var(--rail, transparent);
+}
+.card-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 11px 14px 10px;
+  font-family: var(--font-mono); font-size: 0.76rem; color: var(--fg-mute);
+}
+.card-ts { color: var(--warn); letter-spacing: 0.02em; }
+.card-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.card-spacer { flex: 1; }
+.card-id { color: var(--fg-mute); opacity: 0.55; font-size: 0.72rem; letter-spacing: 0.02em; }
+.card-icon-btn {
+  display: grid; place-items: center; width: 24px; height: 22px;
+  border: none; background: none; border-radius: 6px; cursor: pointer;
+  color: var(--fg-mute); transition: background 0.12s, color 0.12s;
+}
+.card-icon-btn:hover { background: rgba(255,255,255,0.06); color: var(--fg-dim); }
+.card-icon-btn svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+.card-body {
+  padding: 2px 16px 14px;
+  font-family: var(--font-mono); font-size: 0.92rem; line-height: 1.62;
+  color: var(--fg-dim);
+  white-space: pre-wrap; word-break: break-word;
+  user-select: text; -webkit-user-select: text;
+}
+.card-body .ln-tag { font-weight: 600; }
+.card-body .tk-key { color: var(--syn-key); }
+.card-body .tk-str { color: var(--syn-str); }
+.card-body .tk-num { color: var(--syn-num); }
+.card-body .tk-cmt { color: var(--syn-cmt); font-style: italic; }
+.card-body .tk-fn  { color: var(--syn-fn); }
+.card-body .tk-type{ color: var(--syn-type); }
+.card-body .tk-punc{ color: var(--syn-punc); }
+.card-body code { font-family: var(--font-mono); font-size: 0.88em; background: rgba(255,255,255,0.07); padding: 1px 5px; border-radius: 5px; color: #ffd9a8; }
+
+/* tag chips (the 6 controlled axes) */
+.card-tags { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 16px 14px; }
+.tag {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-family: var(--font-mono); font-size: 0.72rem; line-height: 1.6;
+  padding: 1px 8px; border-radius: 6px;
+  color: var(--tc);
+  background: color-mix(in srgb, var(--tc) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--tc) 38%, transparent);
+}
+.tag::before { content: "#"; opacity: 0.6; }
+
+/* link/parent reference (this card references another card) */
+.card-ref {
+  margin: 12px 16px 0;
+  display: flex; align-items: stretch; gap: 0;
+  border-radius: var(--radius-sm); overflow: hidden;
+  border: 1px solid var(--ink-line);
+  background: rgba(255,255,255,0.018);
+  cursor: pointer;
+}
+.card-ref .ref-rail { width: 2px; background: var(--accent-2); flex: none; }
+.card-ref .ref-inner { padding: 7px 11px; min-width: 0; }
+.card-ref .ref-label {
+  display: flex; align-items: center; gap: 6px;
+  font-family: var(--font-mono); font-size: 0.7rem; color: var(--accent-2); margin-bottom: 3px;
+}
+.card-ref .ref-label svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.8; }
+.card-ref .ref-body {
+  font-family: var(--font-mono); font-size: 0.8rem; color: var(--fg-mute);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* links-out badge */
+.card-links {
+  display: inline-flex; align-items: center; gap: 4px; white-space: nowrap;
+  color: var(--accent-2); border: 1px solid color-mix(in srgb, var(--accent-2) 30%, transparent);
+  border-radius: 6px; padding: 1px 7px; font-size: 0.72rem;
+}
+.card-links svg { fill: none; stroke: currentColor; }
+
+/* ───────────────────────── welcome / guía overlay ───────────────────────── */
+.help-overlay {
+  position: fixed; inset: 0; z-index: 60;
+  display: flex; justify-content: center; align-items: flex-start;
+  padding: 5vh 4vw;
+  background: rgba(5, 7, 11, 0.55);
+  backdrop-filter: blur(3px);
+  opacity: 0; transition: opacity 0.12s ease;
+}
+.help-overlay.visible { opacity: 1; }
+.help-panel {
+  width: min(880px, 100%); max-height: 90vh;
+  display: flex; flex-direction: column;
+  border: 1px solid var(--ink-line);
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, #131a26, #0e131d);
+  box-shadow: 0 30px 90px -24px rgba(0,0,0,0.8);
+  transform: translateY(-8px); transition: transform 0.14s cubic-bezier(.2,.9,.3,1);
+}
+.help-overlay.visible .help-panel { transform: translateY(0); }
+.help-head {
+  flex: none; display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 20px; border-bottom: 1px solid var(--ink-line);
+}
+.help-title { font-family: var(--font-mono); font-weight: 700; color: var(--accent); letter-spacing: 0.02em; }
+.help-close {
+  font-family: var(--font-mono); font-size: 0.74rem; color: var(--fg-dim);
+  background: var(--glass-hi); border: 1px solid var(--ink-line); border-radius: 6px;
+  padding: 3px 9px; cursor: pointer;
+}
+.help-close:hover { color: var(--fg); border-color: var(--accent-2); }
+.help-body { overflow-y: auto; padding: 18px 24px 28px; }
+
+.help-sec { margin-bottom: 26px; }
+.help-h2 {
+  font-size: 1rem; color: var(--accent); margin: 0 0 10px;
+  padding-bottom: 5px; border-bottom: 1px solid var(--ink-line);
+}
+.help-h3 { font-size: 0.82rem; color: var(--fg-dim); margin: 0 0 6px; text-transform: uppercase; letter-spacing: 0.04em; }
+.help-p { color: var(--fg-dim); font-size: 0.88rem; line-height: 1.6; margin: 0 0 10px; }
+.help-note { color: var(--fg-mute); font-size: 0.8rem; line-height: 1.55; margin: 8px 0 0; }
+.help-list { margin: 0 0 10px; padding-left: 18px; color: var(--fg-dim); font-size: 0.88rem; line-height: 1.7; }
+.help-list b, .help-p b { color: var(--fg); }
+.help-body code {
+  font-family: var(--font-mono); font-size: 0.82em;
+  background: rgba(255,255,255,0.06); border: 1px solid var(--ink-line);
+  border-radius: 4px; padding: 0 5px; color: var(--accent-2);
+}
+.help-body kbd {
+  font-family: var(--font-mono); font-size: 0.78em;
+  background: rgba(255,255,255,0.08); border: 1px solid var(--glass-line);
+  border-bottom-width: 2px; border-radius: 5px; padding: 1px 6px; color: var(--fg);
+}
+
+.help-eg { margin: 0 0 8px; border-left: 2px solid var(--accent-2); padding: 4px 0 4px 12px; }
+.help-eg-in { font-family: var(--font-mono); font-size: 0.84rem; color: var(--fg); }
+.help-eg-out { font-size: 0.8rem; color: var(--fg-mute); margin-top: 3px; }
+
+.help-table { width: 100%; border-collapse: collapse; font-size: 0.84rem; margin: 4px 0 6px; }
+.help-table th {
+  text-align: left; color: var(--fg-mute); font-weight: 600; font-size: 0.74rem;
+  text-transform: uppercase; letter-spacing: 0.04em; padding: 4px 10px 6px; border-bottom: 1px solid var(--ink-line);
+}
+.help-table td { padding: 6px 10px; border-bottom: 1px solid rgba(255,255,255,0.04); vertical-align: top; color: var(--fg-dim); }
+.help-axis { white-space: nowrap; }
+.help-axis-desc { color: var(--fg-mute); }
+.help-multi { font-size: 0.66rem; color: var(--accent-2); border: 1px solid color-mix(in srgb, var(--accent-2) 35%, transparent); border-radius: 4px; padding: 0 4px; margin-left: 6px; }
+.help-vals { display: flex; flex-wrap: wrap; gap: 5px 12px; }
+.help-val { white-space: nowrap; }
+.help-syn { color: var(--fg-mute); font-size: 0.88em; }
+.help-cmd { white-space: nowrap; }
+
+.help-keys { margin-bottom: 14px; }
+.help-krow { display: flex; align-items: baseline; gap: 10px; padding: 3px 0; color: var(--fg-dim); font-size: 0.85rem; }
+.help-krow kbd { flex: none; min-width: 88px; text-align: center; }
+
+/* tiny axis-colored chips used in the grammar examples */
+.hx { font-family: var(--font-mono); font-size: 0.78rem; padding: 0 5px; border-radius: 4px; border: 1px solid currentColor; }
+.hx-type   { color: #f0883e; }
+.hx-status { color: #3fb950; }
+.hx-prio   { color: #f0883e; }
+.hx-area   { color: #39c5cf; }

@@ -47,7 +47,7 @@ var taxonomy = []tagAxis{
 			"doing":   {"wip", "in-progress", "haciendo"},
 			"blocked": {"bloqueado", "stuck"},
 			"review":  {"in-review", "qa", "pr"},
-			"done":    {"hecho", "listo", "closed", "ready"},
+			"done":    {"hecho", "listo", "closed", "ready", "solved", "resuelto"},
 		},
 	},
 	{

@@ -8,5 +8,7 @@ build/windows/nsis/MicrosoftEdgeWebview2Setup.exe
 # local tooling / scratch
 .claude/
 three-brain-out/
+# design mockups / concept assets (kept out of the code repo)
+app_design/
 # compiled binary
 /noteit_app

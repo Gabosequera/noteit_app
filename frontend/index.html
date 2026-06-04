@@ -28,6 +28,7 @@
                 <button class="tool" data-tool="search" title="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4-4"/></svg></button>
                 <button class="tool" data-tool="tags" title="tags"><svg viewBox="0 0 24 24"><path d="M3 12V5a2 2 0 0 1 2-2h7l9 9-9 9z"/><circle cx="7.5" cy="7.5" r="1.4"/></svg></button>
                 <button class="tool" data-tool="tree" title="folders"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></button>
+                <button class="tool" data-tool="help" title="guía / ayuda (?)"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.3 9.3a2.7 2.7 0 0 1 5.2 1c0 1.8-2.7 2.4-2.7 2.4"/><circle cx="12" cy="17" r="0.6" fill="currentColor"/></svg></button>
                 <button class="tool" data-tool="settings" title="settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 13a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V19a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 7 17.4l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.6 1.6 0 0 0 5 11.9H4.9a2 2 0 1 1 0-4H5a1.6 1.6 0 0 0 1.1-2.7L6 5.1a2 2 0 1 1 2.8-2.8l.1.1A1.6 1.6 0 0 0 11 3.6V3.5a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 2.7 1.1l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8z"/></svg></button>
             </footer>
         </aside>
@@ -74,9 +75,9 @@
     <div class="cmdline-overlay" id="cmdlineOverlay" hidden>
         <div class="cmdline">
             <div class="cmdline-frame">
-                <span class="cl-legend">Cmdline</span>
+                <span class="cl-legend" id="clLegend">Cmdline</span>
                 <div class="cmdline-row">
-                    <span class="cl-prompt">:</span>
+                    <span class="cl-prompt" id="clPrompt">:</span>
                     <span class="cl-text" id="clText"></span>
                 </div>
             </div>
@@ -88,6 +89,17 @@
                 <span><kbd>⏎</kbd> run</span>
                 <span><kbd>esc</kbd> close</span>
             </div>
+        </div>
+    </div>
+
+    <!-- ░░░ WELCOME / GUÍA ░░░ -->
+    <div class="help-overlay" id="helpOverlay" hidden>
+        <div class="help-panel">
+            <header class="help-head">
+                <span class="help-title">noteit · guía</span>
+                <button class="help-close" id="helpClose" title="cerrar (esc)">esc</button>
+            </header>
+            <div class="help-body" id="helpBody"><!-- built in help.ts --></div>
         </div>
     </div>
 

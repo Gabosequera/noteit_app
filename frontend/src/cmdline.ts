@@ -9,6 +9,8 @@
    La navegación real del filesystem necesita una binding de Go (ver runFs). */
 
 import { parseStatement, tagColor, type ParsedStatement } from "./statement.js";
+import { parseCardInput, previewVM, linkTargetVM, type LinkTarget } from "./cards/cardData.js";
+import { buildCardEl } from "./cards/cardView.js";
 
 export interface CmdContext {
     arg: string;             // texto después del nombre del comando
@@ -37,6 +39,16 @@ export interface CmdlineDeps {
     addAnchor: (file: string, lines: string) => void; // anchor active note to code
     createNoteFull: (st: ParsedStatement) => void;    // create a note from a `:*` statement
     listDir: (input: string) => Promise<FinderEntry[]>; // per-directory file finder (Go backend)
+    createCard: (body: string, tags: string[], linkId: string | null, linkKind: "" | "link" | "parent") => void; // mint a card (CardService)
+    showTimeline: () => void;                         // switch the detail pane to the card timeline
+    openActiveDoc: () => void;                         // open the active note as the (embed-capable) doc surface
+    showHelp: () => void;                              // open the welcome / guía overlay
+}
+
+/* how the cmdline opens: as the command palette (`:`) or the card composer (`›`). */
+export interface CmdlineShowOpts {
+    intent?: "card" | "command";
+    linkTarget?: LinkTarget | null;
 }
 
 export interface FinderEntry { name: string; isDir: boolean; }
@@ -76,6 +88,15 @@ export class Cmdline {
     private textEl!: HTMLElement;
     private suggestEl!: HTMLElement;
     private confirmEl!: HTMLElement;
+    private promptEl!: HTMLElement;
+    private legendEl!: HTMLElement;
+
+    // intent: command palette (`:`) vs card composer (`›`). `cardCapable` is true only
+    // when the cmdline was opened as a card composer — it gates the `:`↔Backspace flips
+    // so the plain `:` palette keeps behaving exactly as before.
+    private intent: "card" | "command" = "command";
+    private cardCapable = false;
+    private linkTarget: LinkTarget | null = null;
 
     private open = false;
     private buffer = "";
@@ -122,6 +143,10 @@ export class Cmdline {
         }));
 
         cmds.push(
+            { id: "timeline", aliases: ["cards", "tl"], hint: "card timeline (primary surface)", group: "view",
+              run: () => this.deps.showTimeline() },
+            { id: "doc", aliases: ["note"], hint: "open the active note as a doc", group: "view",
+              run: () => this.deps.openActiveDoc() },
             { id: "new", aliases: ["write", "n"], hint: "compose a new note", group: "app",
               run: () => this.deps.setView("__insert__") },
             { id: "tag", hint: "filter by tag — :tag <name>", group: "tag", takesArg: true,
@@ -148,8 +173,8 @@ export class Cmdline {
               run: ({ arg }) => this.deps.runFs("e", arg) },
             { id: "cd", hint: "change directory — :cd <path>", group: "fs", takesArg: true,
               run: ({ arg }) => this.deps.runFs("cd", arg) },
-            { id: "help", aliases: ["h", "?"], hint: "command reference", group: "app",
-              run: ({ notify }) => notify("comandos: " + this.commands.map(c => ":" + c.id).join("  ")) }
+            { id: "help", aliases: ["h", "?", "guia", "welcome"], hint: "abrir la guía / welcome", group: "app",
+              run: () => this.deps.showHelp() }
         );
         return cmds;
     }
@@ -160,14 +185,25 @@ export class Cmdline {
         this.textEl = document.getElementById("clText")!;
         this.suggestEl = document.getElementById("clSuggest")!;
         this.confirmEl = document.getElementById("clConfirm")!;
+        this.promptEl = document.getElementById("clPrompt")!;
+        this.legendEl = document.getElementById("clLegend")!;
     }
 
     /* ─────────── ciclo de vida ─────────── */
-    show() {
+    show(opts: CmdlineShowOpts = {}) {
         this.open = true;
-        // restaurar borrador (texto + posición del cursor) si quedó algo de antes
-        this.buffer = this.draftBuffer;
-        this.cursor = Math.min(this.draftCursor, this.buffer.length);
+        this.intent = opts.intent ?? "command";
+        this.cardCapable = this.intent === "card";
+        this.linkTarget = opts.linkTarget ?? null;
+        if (this.intent === "card") {
+            // el compositor de tarjetas arranca limpio; los borradores son del palette
+            this.buffer = "";
+            this.cursor = 0;
+        } else {
+            // restaurar borrador (texto + posición del cursor) si quedó algo de antes
+            this.buffer = this.draftBuffer;
+            this.cursor = Math.min(this.draftCursor, this.buffer.length);
+        }
         this.histIdx = -1;
         this.tabBase = null;
         this.confirming = false;
@@ -178,8 +214,12 @@ export class Cmdline {
     /* Cierra el overlay. Por defecto preserva el borrador (Escape); al ejecutar
        un comando se limpia con clearDraft() antes de cerrar. */
     private hide() {
-        this.draftBuffer = this.buffer;
-        this.draftCursor = this.cursor;
+        // only the command palette keeps a draft; card-composer text must never bleed
+        // into the next plain `:` palette (it would run as a bogus command on Enter).
+        if (this.intent === "command") {
+            this.draftBuffer = this.buffer;
+            this.draftCursor = this.cursor;
+        }
         this.confirming = false;
         this.confirmEl.hidden = true;
         this.open = false;
@@ -189,6 +229,18 @@ export class Cmdline {
     private clearDraft() {
         this.buffer = ""; this.cursor = 0;
         this.draftBuffer = ""; this.draftCursor = 0;
+    }
+
+    /* flip between the card composer and the command palette in-session (`:`/Backspace).
+       Always lands on an empty buffer, mirroring the concept's two-mode overlay. */
+    private flipIntent(to: "card" | "command") {
+        this.intent = to;
+        this.buffer = "";
+        this.cursor = 0;
+        this.selected = 0;
+        this.tabBase = null;
+        this.histIdx = -1;
+        this.render();
     }
 
     /* ─────────── teclado ─────────── */
@@ -224,6 +276,17 @@ export class Cmdline {
             }
         }
 
+        // card composer: `:` on an empty buffer flips to the command palette
+        if (this.intent === "card" && e.key === ":" && this.buffer === "") {
+            this.flipIntent("command");
+            return;
+        }
+        // command palette opened FROM the composer: Backspace on an empty buffer flips back
+        if (this.intent === "command" && this.cardCapable && e.key === "Backspace" && this.buffer === "") {
+            this.flipIntent("card");
+            return;
+        }
+
         switch (e.key) {
             case "Escape": this.hide(); return;        // preserva borrador + cursor
             case "Enter": this.execute(); return;
@@ -244,9 +307,12 @@ export class Cmdline {
             case "ArrowRight": if (this.cursor < this.buffer.length) this.cursor++; this.render(true); return;
             case "Home": this.cursor = 0; this.render(true); return;
             case "End": this.cursor = this.buffer.length; this.render(true); return;
-            case "Tab": this.complete(e.shiftKey ? -1 : 1); return;
-            case "ArrowDown": this.moveSel(1); return;
-            case "ArrowUp": this.histIdx === -1 && this.matches.length > 1 ? this.moveSel(-1) : this.historyPrev(); return;
+            case "Tab": if (this.intent !== "card") this.complete(e.shiftKey ? -1 : 1); return;
+            case "ArrowDown": if (this.intent !== "card") this.moveSel(1); return;
+            case "ArrowUp":
+                if (this.intent === "card") return;
+                this.histIdx === -1 && this.matches.length > 1 ? this.moveSel(-1) : this.historyPrev();
+                return;
             default:
                 if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
                     this.buffer = this.buffer.slice(0, this.cursor) + e.key + this.buffer.slice(this.cursor);
@@ -309,6 +375,8 @@ export class Cmdline {
 
     /* ─────────── ejecución ─────────── */
     private execute() {
+        if (this.intent === "card") { this.submitCard(); return; }
+
         const raw = this.buffer.trim();
         if (!raw) { this.clearDraft(); this.hide(); return; }
 
@@ -342,10 +410,28 @@ export class Cmdline {
         cmd.run({ arg, notify: this.deps.notify });
     }
 
+    /* card composer Enter: parse the body + inline tokens and mint a card. */
+    private submitCard() {
+        const { body, tags } = parseCardInput(this.buffer);
+        if (!body) { this.deps.notify("tarjeta vacía"); return; }
+        const link = this.linkTarget;
+        this.clearDraft();
+        this.hide();
+        this.deps.createCard(body, tags, link ? link.id : null, link ? link.kind : "");
+    }
+
     /* ─────────── render ─────────── */
     private render(keepSel = false) {
         if (!keepSel) this.selected = 0;
+        this.updateChrome();
         this.renderBuffer();
+        if (this.intent === "card") {
+            this.finderActive = false;
+            this.finderEntries = [];
+            this.matches = [];
+            this.renderCardPreview();
+            return;
+        }
         if (this.buffer.trim().startsWith("*")) {
             this.matches = [];
             // si el cursor está sobre un token de ruta → finder de archivos
@@ -359,6 +445,44 @@ export class Cmdline {
         this.finderActive = false;
         this.computeMatches();
         this.renderSuggest();
+    }
+
+    /* prompt symbol + legend follow the intent (`›` card composer / `:` palette). */
+    private updateChrome() {
+        if (this.intent === "card") {
+            this.promptEl.textContent = "›";
+            this.legendEl.textContent = this.linkTarget ? "Link · nueva tarjeta" : "Nueva tarjeta";
+        } else {
+            this.promptEl.textContent = ":";
+            this.legendEl.textContent = "Cmdline";
+        }
+    }
+
+    /* live preview of the card being composed, rendered with the real card builder so
+       the composer shows exactly what the timeline will. */
+    private renderCardPreview() {
+        const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        const { body, tags } = parseCardInput(this.buffer);
+        if (!body) {
+            const hint = this.linkTarget
+                ? `respondiendo a #${esc(this.linkTarget.shortId)} — escribí la tarjeta…`
+                : "escribí <b>tags : cuerpo</b> &nbsp;·&nbsp; ej: <kbd>fix done : el bug ya está</kbd> &nbsp;·&nbsp; <kbd>:</kbd> comandos";
+            this.suggestEl.innerHTML = `<li class="cl-empty">${hint}</li>`;
+            return;
+        }
+        const vm = previewVM(body, tags, this.linkTarget);
+        const card = buildCardEl(vm, {
+            mode: "preview",
+            refTarget: this.linkTarget ? linkTargetVM(this.linkTarget) : null,
+        });
+        const li = document.createElement("li");
+        li.className = "cl-card-preview";
+        const label = document.createElement("div");
+        label.className = "cl-prev-label";
+        label.textContent = "vista previa";
+        li.appendChild(label);
+        li.appendChild(card);
+        this.suggestEl.replaceChildren(li);
     }
 
     /* ─────────── finder de archivos (sigil `/`) ─────────── */
