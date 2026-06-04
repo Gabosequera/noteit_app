@@ -10,5 +10,6 @@ build/windows/nsis/MicrosoftEdgeWebview2Setup.exe
 three-brain-out/
 # design mockups / concept assets (kept out of the code repo)
 app_design/
-# compiled binary
+# compiled binaries
 /noteit_app
+/noteit-mcp

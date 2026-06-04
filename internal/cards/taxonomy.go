@@ -91,6 +91,56 @@ var taxonomy = []tagAxis{
 	},
 }
 
+// ─────────────────────────────── public view ────────────────────────────────
+
+// AxisInfo is a stable, serializable description of one tag axis, exposed so
+// external clients (notably the MCP describe_taxonomy tool) can present the
+// controlled vocabulary to an AI agent without it having to guess valid tokens.
+type AxisInfo struct {
+	Name    string      `json:"name"`
+	Multi   bool        `json:"multi"`             // true only for `area` (0-N values)
+	Default string      `json:"default,omitempty"` // canonical default, if the axis has one
+	Values  []AxisValue `json:"values"`
+}
+
+// AxisValue is one canonical value of an axis plus the synonyms that resolve to it.
+type AxisValue struct {
+	Canonical string   `json:"canonical"`
+	Synonyms  []string `json:"synonyms,omitempty"`
+}
+
+// axisDefaults are the canonical defaults applied for an axis when the user omits
+// it: type/status are always materialized on disk; horizon's `now` is applied on
+// read (never written). Mirrors resolveTags + withDefaults.
+var axisDefaults = map[string]string{"type": "note", "status": "todo", "horizon": "now"}
+
+// Taxonomy returns the controlled tag vocabulary in a deterministic, serializable
+// form (axes in declaration order; canonical values and synonyms sorted). It reads
+// the same table the resolver uses, so it can never drift from validation.
+func Taxonomy() []AxisInfo {
+	out := make([]AxisInfo, 0, len(taxonomy))
+	for _, ax := range taxonomy {
+		canon := make([]string, 0, len(ax.values))
+		for c := range ax.values {
+			canon = append(canon, c)
+		}
+		sort.Strings(canon)
+		vals := make([]AxisValue, 0, len(canon))
+		for _, c := range canon {
+			syns := append([]string(nil), ax.values[c]...)
+			sort.Strings(syns)
+			vals = append(vals, AxisValue{Canonical: c, Synonyms: syns})
+		}
+		out = append(out, AxisInfo{
+			Name:    ax.name,
+			Multi:   ax.multi,
+			Default: axisDefaults[ax.name],
+			Values:  vals,
+		})
+	}
+	return out
+}
+
 // tagMatch is a resolved (axis, canonical) pair for one input token.
 type tagMatch struct {
 	axis      string

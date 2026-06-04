@@ -318,6 +318,56 @@ func TestReloadRecoversFromRepairedCorruption(t *testing.T) {
 	}
 }
 
+// TestListCardsRejectsUnknownFilter proves a malformed controlled filter value is
+// a hard error (not a silent empty result), so an MCP/GUI caller learns it mistyped
+// instead of believing the timeline is empty. A synonym must still resolve.
+func TestListCardsRejectsUnknownFilter(t *testing.T) {
+	s := newTestStore(t)
+	if _, err := s.CreateCard(NewCard{Tags: []string{"feat", "done"}, Body: "x"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.ListCards(CardFilter{Status: "nonsense"}); err == nil {
+		t.Fatal("expected unknown status filter to error")
+	}
+	// A value that resolves to the WRONG axis is also rejected.
+	if _, err := s.ListCards(CardFilter{Status: "feat"}); err == nil {
+		t.Fatal("expected a type value in the status filter to error")
+	}
+	// A synonym resolves to canonical and matches the stored card.
+	list, err := s.ListCards(CardFilter{Status: "resuelto"})
+	if err != nil {
+		t.Fatalf("synonym filter errored: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("synonym filter did not match canonical: %d cards", len(list))
+	}
+	// A genuinely unknown area is kept verbatim (areas are free-text) and simply
+	// matches nothing rather than erroring.
+	if _, err := s.ListCards(CardFilter{Area: "some-free-area"}); err != nil {
+		t.Fatalf("free-text area filter must not error: %v", err)
+	}
+	// But a KNOWN token of a different axis ("feat" is a type) can never be stored
+	// as a free area, so filtering by it is a hard error, not a silent empty result.
+	if _, err := s.ListCards(CardFilter{Area: "feat"}); err == nil {
+		t.Fatal("expected a type value in the area filter to error")
+	}
+	// A known area synonym canonicalizes and is accepted.
+	if _, err := s.ListCards(CardFilter{Area: "frontend"}); err != nil {
+		t.Fatalf("area synonym filter must not error: %v", err)
+	}
+}
+
+// TestCreateCardRejectsRefKindWithoutRefID proves a refKind with no refId is a hard
+// error rather than being silently dropped, so a caller's relationship intent is
+// never lost without feedback.
+func TestCreateCardRejectsRefKindWithoutRefID(t *testing.T) {
+	s := newTestStore(t)
+	if _, err := s.CreateCard(NewCard{Tags: []string{"feat"}, Body: "x", RefKind: RefParent}); err == nil {
+		t.Fatal("expected refKind without refId to error")
+	}
+}
+
 // ─────────────────────────────── tag resolver ───────────────────────────────
 
 func TestResolveTagsBasics(t *testing.T) {

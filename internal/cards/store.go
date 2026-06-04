@@ -249,6 +249,10 @@ func (s *Store) createCardLocked(in NewCard) (Card, error) {
 			return Card{}, fmt.Errorf("invalid ref kind %q", kind)
 		}
 		ref = &Ref{ID: rid, Kind: kind}
+	} else if strings.TrimSpace(in.RefKind) != "" {
+		// A refKind with no refId is a caller mistake: it would be silently
+		// dropped, producing an unlinked card. Reject it so the mistake surfaces.
+		return Card{}, fmt.Errorf("refKind %q set without a refId", strings.TrimSpace(in.RefKind))
 	}
 
 	id, err := uuid.NewV7()
@@ -342,8 +346,15 @@ func fsyncFile(path string) error {
 // ListCards returns cards in creation order (the timeline), optionally filtered.
 // Derived backlinks/children are NOT filled here (cheap list); use GetCard for those.
 func (s *Store) ListCards(filter CardFilter) ([]Card, error) {
+	// Validate/normalize the filter BEFORE touching disk: an unknown controlled
+	// value (e.g. a typo'd status) is rejected loudly instead of silently matching
+	// nothing, which an AI agent could not distinguish from "no cards yet".
+	filter, err := normalizeFilter(filter)
+	if err != nil {
+		return nil, err
+	}
 	var out []Card
-	err := s.guarded(func() error {
+	err = s.guarded(func() error {
 		out = make([]Card, 0, len(s.cards))
 		for _, c := range s.cards {
 			if !matchesFilter(c, filter) {
@@ -406,6 +417,68 @@ func (s *Store) withDefaults(c Card) Card {
 		c.Tags.Horizon = "now"
 	}
 	return c
+}
+
+// normalizeFilter validates each controlled filter field against the taxonomy and
+// rewrites it to its canonical form, so a synonym filter (status=resuelto) matches
+// the canonical stored on cards (done) and an unrecognized value is a clear error.
+// The area axis is free-text/multi: a known synonym is canonicalized, but an
+// unrecognized value is kept verbatim because it may be a legitimate free area.
+func normalizeFilter(f CardFilter) (CardFilter, error) {
+	var err error
+	if f.Type, err = resolveFilterValue("type", f.Type); err != nil {
+		return f, err
+	}
+	if f.Status, err = resolveFilterValue("status", f.Status); err != nil {
+		return f, err
+	}
+	if f.Priority, err = resolveFilterValue("priority", f.Priority); err != nil {
+		return f, err
+	}
+	if f.Horizon, err = resolveFilterValue("horizon", f.Horizon); err != nil {
+		return f, err
+	}
+	if f.Effort, err = resolveFilterValue("effort", f.Effort); err != nil {
+		return f, err
+	}
+	if f.Area, err = resolveAreaFilter(f.Area); err != nil {
+		return f, err
+	}
+	return f, nil
+}
+
+// resolveFilterValue maps a controlled-axis filter value to its canonical form.
+// An empty value means "no filter". A value that resolves to a DIFFERENT axis, or
+// to nothing, is rejected so the caller learns it mistyped.
+func resolveFilterValue(axis, value string) (string, error) {
+	norm := normalizeToken(value)
+	if norm == "" {
+		return "", nil
+	}
+	m, ok := tokenIndex[norm]
+	if !ok || m.axis != axis {
+		return "", fmt.Errorf("unknown %s filter %q", axis, strings.TrimSpace(value))
+	}
+	return m.canonical, nil
+}
+
+// resolveAreaFilter canonicalizes a known area synonym and preserves a genuinely
+// unknown value as a free-text area (areas are user-defined). A value that is a
+// KNOWN token of a DIFFERENT axis (e.g. "feat" is a type) is rejected: it can never
+// be stored as a free area by CreateCard, so filtering by it would silently return
+// an empty list and mislead the caller into thinking the timeline is empty.
+func resolveAreaFilter(value string) (string, error) {
+	norm := normalizeToken(value)
+	if norm == "" {
+		return "", nil
+	}
+	if m, ok := tokenIndex[norm]; ok {
+		if m.axis != "area" {
+			return "", fmt.Errorf("unknown area filter %q (it is a %s value)", strings.TrimSpace(value), m.axis)
+		}
+		return m.canonical, nil
+	}
+	return strings.TrimSpace(value), nil
 }
 
 func matchesFilter(c Card, f CardFilter) bool {
