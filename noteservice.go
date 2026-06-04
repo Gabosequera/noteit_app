@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Gabosequera/noteit_app/internal/vault"
 	"github.com/google/uuid"
 )
 
@@ -31,7 +32,7 @@ type NoteService struct {
 // .noteit/ in a meaningless location.
 func NewNoteService() *NoteService {
 	s := &NoteService{}
-	root, err := resolveProjectRoot()
+	root, err := vault.Discover()
 	if err != nil {
 		s.rootErr = err
 		log.Printf("noteit: project root unresolved: %v", err)
@@ -45,52 +46,6 @@ func NewNoteService() *NoteService {
 	}
 	log.Printf("noteit: vault ready at %s", s.notesDir())
 	return s
-}
-
-func resolveProjectRoot() (string, error) {
-	if p := strings.TrimSpace(os.Getenv("NOTEIT_PROJECT")); p != "" {
-		abs, err := filepath.Abs(p)
-		if err != nil {
-			return "", fmt.Errorf("NOTEIT_PROJECT invalid: %w", err)
-		}
-		return validateRoot(abs)
-	}
-
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", fmt.Errorf("getwd: %w", err)
-	}
-
-	if gitRoot := walkUpForGit(cwd); gitRoot != "" {
-		return validateRoot(gitRoot)
-	}
-	return validateRoot(cwd)
-}
-
-// walkUpForGit returns the nearest ancestor (including start) containing a .git
-// entry, or "" if none is found before the filesystem root.
-func walkUpForGit(start string) string {
-	dir := start
-	for {
-		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return ""
-		}
-		dir = parent
-	}
-}
-
-func validateRoot(dir string) (string, error) {
-	if dir == "/" || dir == "" {
-		return "", errors.New("refusing to use filesystem root as project; set NOTEIT_PROJECT or run inside a project")
-	}
-	if home, err := os.UserHomeDir(); err == nil && filepath.Clean(dir) == filepath.Clean(home) {
-		return "", errors.New("refusing to use home directory as project; set NOTEIT_PROJECT or run inside a project")
-	}
-	return dir, nil
 }
 
 func (s *NoteService) noteitDir() string { return filepath.Join(s.root, ".noteit") }

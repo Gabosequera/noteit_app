@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Gabosequera/noteit_app/internal/vault"
 )
 
 // newTestService builds a NoteService rooted at a temp dir, bypassing the
@@ -326,11 +328,11 @@ func mustWrite(t *testing.T, path, body string) {
 }
 
 func TestValidateRootRejectsHomeAndSlash(t *testing.T) {
-	if _, err := validateRoot("/"); err == nil {
+	if _, err := vault.ValidateRoot("/"); err == nil {
 		t.Error("expected / to be rejected")
 	}
 	if home, err := os.UserHomeDir(); err == nil {
-		if _, err := validateRoot(home); err == nil {
+		if _, err := vault.ValidateRoot(home); err == nil {
 			t.Error("expected home dir to be rejected")
 		}
 	}

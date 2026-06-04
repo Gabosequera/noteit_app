@@ -1,4 +1,4 @@
-package main
+package cards
 
 import (
 	"os"
@@ -148,25 +148,21 @@ func TestParseBlockUnknownKeyIsCorrupt(t *testing.T) {
 
 // ───────────────────────────── store integration ────────────────────────────
 
-func newCardTestService(t *testing.T) *CardService {
+func newTestStore(t *testing.T) *Store {
 	t.Helper()
 	dir := t.TempDir()
-	s := &CardService{
-		root:  dir,
-		path:  filepath.Join(dir, ".noteit", "timeline.md"),
-		index: map[string]int{},
+	if err := os.MkdirAll(filepath.Join(dir, ".noteit"), 0o755); err != nil {
+		t.Fatalf("mkdir vault: %v", err)
 	}
-	if err := s.ensureVault(); err != nil {
-		t.Fatalf("ensureVault: %v", err)
-	}
-	if err := s.load(); err != nil {
-		t.Fatalf("load: %v", err)
+	s := New(filepath.Join(dir, ".noteit", "timeline.md"))
+	if s.corrupt != nil {
+		t.Fatalf("fresh store reported corruption: %v", s.corrupt)
 	}
 	return s
 }
 
 func TestCreateAndReload(t *testing.T) {
-	s := newCardTestService(t)
+	s := newTestStore(t)
 	a, err := s.CreateCard(NewCard{Tags: []string{"feat", "doing", "client"}, Body: "first"})
 	if err != nil {
 		t.Fatalf("create a: %v", err)
@@ -177,10 +173,7 @@ func TestCreateAndReload(t *testing.T) {
 	}
 
 	// Reload from disk into a fresh service: same two cards, in order.
-	s2 := &CardService{root: s.root, path: s.path, index: map[string]int{}}
-	if err := s2.load(); err != nil {
-		t.Fatalf("reload: %v", err)
-	}
+	s2 := New(s.path)
 	list, err := s2.ListCards(CardFilter{})
 	if err != nil {
 		t.Fatal(err)
@@ -203,7 +196,7 @@ func TestCreateAndReload(t *testing.T) {
 }
 
 func TestReloadTruncatesTornTail(t *testing.T) {
-	s := newCardTestService(t)
+	s := newTestStore(t)
 	a, _ := s.CreateCard(NewCard{Tags: []string{"feat"}, Body: "keep me"})
 	if _, err := s.CreateCard(NewCard{Tags: []string{"fix"}, Body: "lose me"}); err != nil {
 		t.Fatal(err)
@@ -215,10 +208,7 @@ func TestReloadTruncatesTornTail(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s2 := &CardService{root: s.root, path: s.path, index: map[string]int{}}
-	if err := s2.load(); err != nil {
-		t.Fatalf("load after tear: %v", err)
-	}
+	s2 := New(s.path)
 	list, _ := s2.ListCards(CardFilter{})
 	if len(list) != 1 || list[0].ID != a.ID {
 		t.Fatalf("torn tail not truncated: %d cards", len(list))
@@ -228,10 +218,7 @@ func TestReloadTruncatesTornTail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("append after recovery: %v", err)
 	}
-	s3 := &CardService{root: s.root, path: s.path, index: map[string]int{}}
-	if err := s3.load(); err != nil {
-		t.Fatalf("final load: %v", err)
-	}
+	s3 := New(s.path)
 	list, _ = s3.ListCards(CardFilter{})
 	if len(list) != 2 || list[1].ID != c.ID {
 		t.Fatalf("post-recovery state wrong: %d cards", len(list))
@@ -239,7 +226,7 @@ func TestReloadTruncatesTornTail(t *testing.T) {
 }
 
 func TestMidFileCorruptionBlocksWrites(t *testing.T) {
-	s := newCardTestService(t)
+	s := newTestStore(t)
 	if _, err := s.CreateCard(NewCard{Tags: []string{"feat"}, Body: "one"}); err != nil {
 		t.Fatal(err)
 	}
@@ -251,12 +238,10 @@ func TestMidFileCorruptionBlocksWrites(t *testing.T) {
 	corrupt := strings.Replace(string(data), "> ENDCARD ", "> ENDCARX ", 1)
 	os.WriteFile(s.path, []byte(corrupt), 0o644)
 
-	s2 := &CardService{root: s.root, path: s.path, index: map[string]int{}}
-	err := s2.load()
-	if err == nil {
-		t.Fatal("expected corruption error on load")
+	s2 := New(s.path)
+	if s2.corrupt == nil {
+		t.Fatal("expected corruption to be detected on load")
 	}
-	s2.corrupt = err
 	if _, err := s2.CreateCard(NewCard{Tags: []string{"docs"}, Body: "blocked"}); err == nil {
 		t.Fatal("expected write to be refused on corrupt timeline")
 	}
