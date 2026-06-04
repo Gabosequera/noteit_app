@@ -21,26 +21,63 @@ import (
 //
 // Contract: docs/v3/PLAN.md §1 (entity), §2 (storage) and §2·B (framing/durability).
 type Store struct {
-	mu      sync.Mutex
-	path    string // .noteit/timeline.md (the caller ensures the parent dir exists)
-	corrupt error  // mid-file corruption found at load → writes refused (D.5)
+	mu       sync.Mutex
+	path     string // .noteit/timeline.md (the caller ensures the parent dir exists)
+	lockPath string // .noteit/timeline.lock (dedicated interprocess lock file)
+	corrupt  error  // mid-file corruption found at load → writes refused (D.5)
 
 	cards []Card         // in creation (append) order
 	index map[string]int // id -> position in cards
 }
 
-// New opens (or durably creates) the timeline at path and loads it once into an
-// in-memory index. A torn tail is truncated; mid-file corruption is recorded and
-// blocks future writes (the file is left untouched). The caller MUST have created
-// the parent .noteit/ directory first (see vault.EnsureNoteitDir).
+// New constructs a Store for the timeline at path. The lock file lives beside it
+// (timeline.lock in the same .noteit/ dir). It then performs an initial load under
+// the interprocess lock: a torn tail is truncated; mid-file corruption is recorded
+// and blocks future writes (the file is left untouched). The caller MUST have
+// created the parent .noteit/ directory first (see vault.EnsureNoteitDir).
+//
+// All on-disk inspection happens under the lock (never eagerly without it) so a
+// concurrent external append is never mistaken for a torn tail and truncated.
 func New(path string) *Store {
-	s := &Store{path: path, index: map[string]int{}}
-	if err := s.load(); err != nil {
+	s := &Store{
+		path:     path,
+		lockPath: filepath.Join(filepath.Dir(path), "timeline.lock"),
+		index:    map[string]int{},
+	}
+	if err := s.guarded(func() error { return nil }); err != nil {
 		log.Printf("noteit cards: timeline load error (writes disabled): %v", err)
 		return s
 	}
 	log.Printf("noteit cards: timeline ready at %s (%d cards)", s.path, len(s.cards))
 	return s
+}
+
+// guarded runs fn while holding BOTH the in-process mutex and the exclusive
+// interprocess file lock, after re-reading the timeline FRESH from disk. This
+// single critical section is what makes load/torn-tail-recovery + append + fsync
+// atomic across processes: while we hold the lock no other noteit process can
+// append, so any tail we see is genuinely torn (never an in-flight external
+// write), and the state fn observes is always the latest committed timeline.
+//
+// We deliberately reload on every call rather than caching by size+modtime: the
+// timeline is human-readable and may be hand-edited or restored from backup, where
+// a same-size / equal-mtime change would defeat such a cache and let us append to
+// content we never parsed. Correctness beats skipping a re-parse; for v1 card
+// volumes the cost is negligible and a robust change-detector can be added later.
+func (s *Store) guarded(fn func() error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	release, err := acquireFileLock(s.lockPath)
+	if err != nil {
+		return fmt.Errorf("acquire timeline lock: %w", err)
+	}
+	defer release()
+
+	if err := s.load(); err != nil {
+		return err
+	}
+	return fn()
 }
 
 // load reads timeline.md, parses every block, and atomically replaces the
@@ -170,8 +207,18 @@ type CardFilter struct {
 // appends the block durably, and updates the index. Cards are immutable: there is
 // deliberately no UpdateCard/DeleteCard.
 func (s *Store) CreateCard(in NewCard) (Card, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	var out Card
+	err := s.guarded(func() error {
+		c, e := s.createCardLocked(in)
+		out = c
+		return e
+	})
+	return out, err
+}
+
+// createCardLocked is the body of CreateCard; the caller (guarded) holds both the
+// in-process mutex and the interprocess lock and has already refreshed state.
+func (s *Store) createCardLocked(in NewCard) (Card, error) {
 	if err := s.writable(); err != nil {
 		return Card{}, err
 	}
@@ -295,18 +342,19 @@ func fsyncFile(path string) error {
 // ListCards returns cards in creation order (the timeline), optionally filtered.
 // Derived backlinks/children are NOT filled here (cheap list); use GetCard for those.
 func (s *Store) ListCards(filter CardFilter) ([]Card, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.corrupt != nil {
-		return nil, s.corrupt
-	}
-
-	out := make([]Card, 0, len(s.cards))
-	for _, c := range s.cards {
-		if !matchesFilter(c, filter) {
-			continue
+	var out []Card
+	err := s.guarded(func() error {
+		out = make([]Card, 0, len(s.cards))
+		for _, c := range s.cards {
+			if !matchesFilter(c, filter) {
+				continue
+			}
+			out = append(out, s.withDefaults(c))
 		}
-		out = append(out, s.withDefaults(c))
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return out, nil
 }
@@ -314,29 +362,31 @@ func (s *Store) ListCards(filter CardFilter) ([]Card, error) {
 // GetCard returns one card by id with derived backlinks (incoming kind=link) and
 // children (incoming kind=parent) computed from the whole store (D.7/D.8).
 func (s *Store) GetCard(id string) (Card, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.corrupt != nil {
-		return Card{}, s.corrupt
-	}
-	if _, err := uuid.Parse(id); err != nil {
-		return Card{}, fmt.Errorf("invalid id: %w", err)
-	}
-	pos, ok := s.index[id]
-	if !ok {
-		return Card{}, fmt.Errorf("card %s not found", id)
-	}
-	card := s.withDefaults(s.cards[pos])
+	var card Card
+	err := s.guarded(func() error {
+		if _, err := uuid.Parse(id); err != nil {
+			return fmt.Errorf("invalid id: %w", err)
+		}
+		pos, ok := s.index[id]
+		if !ok {
+			return fmt.Errorf("card %s not found", id)
+		}
+		card = s.withDefaults(s.cards[pos])
 
-	for _, other := range s.cards {
-		if other.Ref == nil || other.Ref.ID != id {
-			continue
+		for _, other := range s.cards {
+			if other.Ref == nil || other.Ref.ID != id {
+				continue
+			}
+			if other.Ref.Kind == RefParent {
+				card.Children = append(card.Children, other.ID)
+			} else {
+				card.Backlinks = append(card.Backlinks, other.ID)
+			}
 		}
-		if other.Ref.Kind == RefParent {
-			card.Children = append(card.Children, other.ID)
-		} else {
-			card.Backlinks = append(card.Backlinks, other.ID)
-		}
+		return nil
+	})
+	if err != nil {
+		return Card{}, err
 	}
 	return card, nil
 }
