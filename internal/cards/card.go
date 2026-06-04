@@ -252,12 +252,22 @@ func parseHeader(line string) (Card, int, error) {
 		case "effort":
 			c.Tags.Effort = val
 		case "ref":
-			rid, kind, _ := strings.Cut(val, ":")
+			rid, kind, found := strings.Cut(val, ":")
 			if _, err := uuid.Parse(rid); err != nil {
 				return Card{}, 0, fmt.Errorf("bad ref id %q", rid)
 			}
-			if kind == "" {
+			// The writer only ever emits a bare id (link) or exactly "id:parent".
+			// Anything else — a typo, an extra ":suffix", or even a trailing ":" that
+			// yields an explicitly empty kind — is corruption, not a silently
+			// downgraded link, so reject it and drop the block. We use `found` to tell
+			// a genuinely absent kind ("<uuid>") from an empty one ("<uuid>:").
+			switch {
+			case !found:
 				kind = RefLink
+			case kind == RefLink || kind == RefParent:
+				// ok
+			default:
+				return Card{}, 0, fmt.Errorf("bad ref kind %q", kind)
 			}
 			c.Ref = &Ref{ID: rid, Kind: kind}
 		case "bytes":

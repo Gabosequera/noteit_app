@@ -87,6 +87,33 @@ func TestParseRefRoundTrip(t *testing.T) {
 	}
 }
 
+// TestParseBlockMalformedRefKindIsCorrupt proves a stored ref with a kind the
+// writer can never emit (a typo, or an extra ":suffix") is treated as corruption
+// rather than silently downgraded to a link with wrong semantics.
+func TestParseBlockMalformedRefKindIsCorrupt(t *testing.T) {
+	target := mustV7(t)
+	for _, suffix := range []string{":", ":garbage", ":parent:extra", ":link:x"} {
+		c := sampleCard(t, "child")
+		blk := string(c.serialize())
+		// Inject a ref header field carrying the bad kind, right before bytes.
+		bad := strings.Replace(blk, " | bytes:", " | ref:"+target+suffix+" | bytes:", 1)
+		_, _, err := parseBlock([]byte(bad), 0)
+		if err == nil || err == errTornTail {
+			t.Fatalf("ref suffix %q: got %v, want a corruption error", suffix, err)
+		}
+	}
+
+	// A bare ref (no kind) and an explicit :parent must still parse cleanly.
+	for _, suffix := range []string{"", ":parent", ":link"} {
+		c := sampleCard(t, "child")
+		blk := string(c.serialize())
+		good := strings.Replace(blk, " | bytes:", " | ref:"+target+suffix+" | bytes:", 1)
+		if _, _, err := parseBlock([]byte(good), 0); err != nil {
+			t.Fatalf("valid ref suffix %q rejected: %v", suffix, err)
+		}
+	}
+}
+
 func TestAreaEncodingSurvivesDelimiters(t *testing.T) {
 	c := sampleCard(t, "x")
 	c.Tags.Area = []string{"weird, area | value\nbreak"}
