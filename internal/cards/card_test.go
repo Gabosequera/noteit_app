@@ -247,6 +247,77 @@ func TestMidFileCorruptionBlocksWrites(t *testing.T) {
 	}
 }
 
+// TestReloadAfterTimelineDeleted exercises reload-safety: if the timeline file is
+// removed out from under a loaded Store, a reload must drop the stale in-memory
+// cards (not keep serving deleted entries) and recreate a clean, appendable file.
+func TestReloadAfterTimelineDeleted(t *testing.T) {
+	s := newTestStore(t)
+	if _, err := s.CreateCard(NewCard{Tags: []string{"feat"}, Body: "gone soon"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(s.path); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.load(); err != nil {
+		t.Fatalf("reload after delete: %v", err)
+	}
+	list, err := s.ListCards(CardFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("stale cards survived delete+reload: %d", len(list))
+	}
+	if _, err := s.CreateCard(NewCard{Tags: []string{"docs"}, Body: "fresh"}); err != nil {
+		t.Fatalf("append after recreate: %v", err)
+	}
+}
+
+// TestReloadRecoversFromRepairedCorruption verifies that a mid-file-corruption
+// poison is not permanent: once the file is repaired, a clean reload clears
+// s.corrupt and restores normal operation (and the poison preserved live state).
+func TestReloadRecoversFromRepairedCorruption(t *testing.T) {
+	s := newTestStore(t)
+	a, _ := s.CreateCard(NewCard{Tags: []string{"feat"}, Body: "one"})
+	if _, err := s.CreateCard(NewCard{Tags: []string{"fix"}, Body: "two"}); err != nil {
+		t.Fatal(err)
+	}
+	good, _ := os.ReadFile(s.path)
+
+	// Corrupt mid-file, reload → poisoned, reads refused.
+	corrupt := strings.Replace(string(good), "> ENDCARD ", "> ENDCARX ", 1)
+	if err := os.WriteFile(s.path, []byte(corrupt), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.load(); err == nil {
+		t.Fatal("expected corruption error on reload")
+	}
+	if s.corrupt == nil {
+		t.Fatal("store not poisoned after corrupt reload")
+	}
+	if _, err := s.ListCards(CardFilter{}); err == nil {
+		t.Fatal("expected reads to error while poisoned")
+	}
+
+	// Repair the file, reload → poison cleared, state restored.
+	if err := os.WriteFile(s.path, good, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.load(); err != nil {
+		t.Fatalf("reload after repair: %v", err)
+	}
+	if s.corrupt != nil {
+		t.Fatalf("poison not cleared after good reload: %v", s.corrupt)
+	}
+	list, err := s.ListCards(CardFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 2 || list[0].ID != a.ID {
+		t.Fatalf("recovered state wrong: %d cards", len(list))
+	}
+}
+
 // ─────────────────────────────── tag resolver ───────────────────────────────
 
 func TestResolveTagsBasics(t *testing.T) {

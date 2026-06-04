@@ -90,12 +90,19 @@ func walkUpForGit(start string) string {
 }
 
 // ValidateRoot refuses roots that would scatter a .noteit/ somewhere meaningless:
-// the filesystem root and the user's home directory.
+// the filesystem root and the user's home directory. The home check compares
+// CANONICAL paths on both sides, so a symlinked $HOME cannot slip through by
+// resolving to a different string than the candidate (which Resolve canonicalizes).
 func ValidateRoot(dir string) (string, error) {
-	if dir == "/" || dir == "" {
+	cleaned := filepath.Clean(dir)
+	if cleaned == "" || cleaned == "." {
+		return "", errors.New("refusing to use an empty/relative project path; set NOTEIT_PROJECT or run inside a project")
+	}
+	// Any filesystem root is its own parent: "/" on Unix, "C:\\" on Windows.
+	if filepath.Dir(cleaned) == cleaned {
 		return "", errors.New("refusing to use filesystem root as project; set NOTEIT_PROJECT or run inside a project")
 	}
-	if home, err := os.UserHomeDir(); err == nil && filepath.Clean(dir) == filepath.Clean(home) {
+	if home, err := os.UserHomeDir(); err == nil && canonical(cleaned) == canonical(home) {
 		return "", errors.New("refusing to use home directory as project; set NOTEIT_PROJECT or run inside a project")
 	}
 	return dir, nil

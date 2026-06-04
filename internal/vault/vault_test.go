@@ -20,6 +20,20 @@ func TestValidateRootRejectsHomeAndSlash(t *testing.T) {
 	}
 }
 
+func TestValidateRootRejectsSymlinkedHome(t *testing.T) {
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "homelink")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlink unsupported here: %v", err)
+	}
+	// $HOME points at the symlink; the candidate is the REAL home path (a
+	// different string). Canonicalization must still reject it.
+	t.Setenv("HOME", link)
+	if _, err := ValidateRoot(real); err == nil {
+		t.Fatal("expected canonical home rejection through symlinked $HOME")
+	}
+}
+
 func TestResolveExplicitOverride(t *testing.T) {
 	dir := t.TempDir()
 	got, err := Resolve(dir)

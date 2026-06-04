@@ -48,20 +48,18 @@ func NewNoteService() *NoteService {
 	return s
 }
 
-func (s *NoteService) noteitDir() string { return filepath.Join(s.root, ".noteit") }
-func (s *NoteService) notesDir() string  { return filepath.Join(s.noteitDir(), "notes") }
+func (s *NoteService) noteitDir() string { return vault.NoteitDir(s.root) }
+func (s *NoteService) notesDir() string  { return vault.NotesDir(s.root) }
 
-// ensureVault creates .noteit/notes/ and writes .noteit/.gitignore = "*" so
-// notes are private-by-default without touching the project's root .gitignore.
+// ensureVault creates .noteit/ (with the private-by-default .gitignore, shared
+// with CardService via internal/vault) plus the notes/ subdirectory that holds
+// one Markdown file per text note.
 func (s *NoteService) ensureVault() error {
+	if err := vault.EnsureNoteitDir(s.root); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(s.notesDir(), 0o755); err != nil {
 		return fmt.Errorf("mkdir notes: %w", err)
-	}
-	gitignore := filepath.Join(s.noteitDir(), ".gitignore")
-	if _, err := os.Stat(gitignore); errors.Is(err, os.ErrNotExist) {
-		if err := os.WriteFile(gitignore, []byte("*\n"), 0o644); err != nil {
-			return fmt.Errorf("write .gitignore: %w", err)
-		}
 	}
 	return nil
 }

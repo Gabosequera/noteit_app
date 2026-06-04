@@ -36,7 +36,6 @@ type Store struct {
 func New(path string) *Store {
 	s := &Store{path: path, index: map[string]int{}}
 	if err := s.load(); err != nil {
-		s.corrupt = err
 		log.Printf("noteit cards: timeline load error (writes disabled): %v", err)
 		return s
 	}
@@ -44,25 +43,35 @@ func New(path string) *Store {
 	return s
 }
 
-// load reads timeline.md, parses every block, and builds the index. A torn tail
-// (D.5) is truncated on disk before any append can happen; mid-file corruption is
-// returned as an error (the caller disables writes and leaves the file intact).
+// load reads timeline.md, parses every block, and atomically replaces the
+// in-memory state. It is reload-safe: it parses into LOCAL slices/maps and only
+// commits them (and clears/sets s.corrupt) once the outcome is known, so a failed
+// reload never leaves a half-parsed prefix or stale-vs-fresh mismatch behind.
+//
+// A torn tail (D.5) is truncated on disk before any append can happen; mid-file
+// corruption poisons the store (writes refused) and leaves the previous good
+// state and the file untouched. Any load error sets s.corrupt; a clean load
+// clears it (so a store can recover if the timeline is repaired/replaced).
 func (s *Store) load() error {
 	data, err := os.ReadFile(s.path)
 	if errors.Is(err, os.ErrNotExist) {
-		// Create an empty timeline durably so the directory entry is persisted.
-		return s.createEmpty()
+		// No file yet: create an empty timeline durably, then commit empty state.
+		// (Done BEFORE touching live state so a create failure can't lose it.)
+		if cerr := s.createEmpty(); cerr != nil {
+			s.corrupt = cerr
+			return cerr
+		}
+		s.cards, s.index, s.corrupt = nil, map[string]int{}, nil
+		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("read timeline: %w", err)
+		s.corrupt = fmt.Errorf("read timeline: %w", err)
+		return s.corrupt
 	}
 
-	// Reset in-memory state so load() is safe to call on a fresh or reused Store.
-	s.cards = s.cards[:0]
-	for k := range s.index {
-		delete(s.index, k)
-	}
-
+	// Parse into LOCAL state; live state stays intact until we succeed.
+	cards := make([]Card, 0, len(s.cards))
+	index := make(map[string]int)
 	pos := 0
 	for pos < len(data) {
 		card, next, perr := parseBlock(data, pos)
@@ -72,29 +81,35 @@ func (s *Store) load() error {
 				// proceed (D.5). Only the tail can ever be incomplete.
 				if pos < len(data) {
 					if terr := os.Truncate(s.path, int64(pos)); terr != nil {
-						return fmt.Errorf("truncate torn tail: %w", terr)
+						s.corrupt = fmt.Errorf("truncate torn tail: %w", terr)
+						return s.corrupt
 					}
 					if ferr := fsyncFile(s.path); ferr != nil {
-						return fmt.Errorf("fsync after torn-tail truncate: %w", ferr)
+						s.corrupt = fmt.Errorf("fsync after torn-tail truncate: %w", ferr)
+						return s.corrupt
 					}
 					log.Printf("noteit cards: discarded torn tail at offset %d", pos)
 				}
 				break
 			}
-			// Complete-but-malformed block somewhere in the file: refuse to start
-			// writing (don't make it worse). Surface as an explicit error.
-			return fmt.Errorf("mid-file corruption: %w", perr)
+			// Complete-but-malformed block somewhere in the file: poison the store
+			// and leave both the previous good state and the file untouched.
+			s.corrupt = fmt.Errorf("mid-file corruption: %w", perr)
+			return s.corrupt
 		}
-		if _, dup := s.index[card.ID]; dup {
+		if _, dup := index[card.ID]; dup {
 			// Duplicate id (manual edit): first wins, warn (D.7).
 			log.Printf("noteit cards: duplicate id %s ignored", card.ID)
 			pos = next
 			continue
 		}
-		s.index[card.ID] = len(s.cards)
-		s.cards = append(s.cards, card)
+		index[card.ID] = len(cards)
+		cards = append(cards, card)
 		pos = next
 	}
+
+	// Commit: atomically replace state and clear any prior poison.
+	s.cards, s.index, s.corrupt = cards, index, nil
 	return nil
 }
 
